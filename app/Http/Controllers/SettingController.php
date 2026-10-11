@@ -3,7 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\AuditLog;
-use App\Models\CompanySetting;
+use App\Models\Company;
 use App\Models\DocumentSequence;
 use App\Models\FinancialYear;
 use App\Models\GstRate;
@@ -13,35 +13,16 @@ class SettingController extends Controller
 {
     public function index()
     {
-        $company = CompanySetting::firstOrCreate([], [
-            'company_name' => 'LAXMI TRADERS',
-            'trade_name' => 'LAXMI TRADERS',
-            'address' => 'No 54 – PALLAVARAYAN PALAYAM, VEERANAMPALAYAM, P.O., KANGEYAM',
-            'city' => 'KANGEYAM',
-            'district' => 'Tirupur',
-            'state' => 'Tamil Nadu',
-            'pincode' => '620010',
-            'gstin' => '33BWLPK6363A3ZN',
-            'cin' => '',
-            'pan' => 'BWLPK6363A',
-            'phone' => '+91 98765 43210',
-            'email' => 'accounts@laxmitraders.com',
-            'website' => 'www.laxmitraders.com',
-            'bank_name' => 'State Bank of India',
-            'account_number' => '12345678901234',
-            'ifsc_code' => 'SBIN0001234',
-            'branch_bank' => 'Kangeyam Branch',
-            'rounding_mode' => 'nearest_rupee',
-            'settlement_prefix' => 'SB',
-            'debit_note_prefix' => 'DN',
-            'credit_note_prefix' => 'CN',
-            'invoice_prefix' => 'INV',
-            'authorized_signatory_title' => 'For LAXMI TRADERS',
-        ]);
+        $company = $this->activeCompany() ?? Company::query()->active()->orderBy('sort_order')->first();
 
         $gstRates = GstRate::all();
         $financialYears = FinancialYear::orderBy('start_date', 'desc')->get();
-        $sequences = DocumentSequence::with('branch')->get();
+
+        $sequences = DocumentSequence::with('branch');
+        $branchIds = $this->allowedBranchIds();
+        if (is_array($branchIds)) {
+            $sequences->whereIn('branch_id', $branchIds);
+        }
 
         return response()->json([
             'success' => true,
@@ -49,23 +30,32 @@ class SettingController extends Controller
                 'company' => $company,
                 'gst_rates' => $gstRates,
                 'financial_years' => $financialYears,
-                'document_sequences' => $sequences,
+                'document_sequences' => $sequences->get(),
             ],
         ]);
     }
 
     public function update(Request $request)
     {
-        $company = CompanySetting::firstOrCreate([]);
+        $company = $this->activeCompany() ?? Company::query()->active()->orderBy('sort_order')->firstOrFail();
+
+        if (! $request->user()->isSuperAdmin() && ! $request->user()->canPermission('settings.edit') && ! $request->user()->canPermission('settings.manage')) {
+            abort(403, 'You are not allowed to update settings.');
+        }
+
         $old = $company->toArray();
 
         $company->update($request->only([
             'company_name',
+            'tagline',
+            'sub_tagline',
             'trade_name',
+            'short_name',
             'address',
             'city',
             'district',
             'state',
+            'state_code',
             'pincode',
             'gstin',
             'cin',
@@ -89,7 +79,7 @@ class SettingController extends Controller
             'authorized_signatory_title',
         ]));
 
-        AuditLog::logAction('updated', 'Setting', $company->id, 'CompanySettings', $old, $company->toArray(), 'Settings updated');
+        AuditLog::logAction('updated', 'Setting', $company->id, 'Company:' . $company->code, $old, $company->toArray(), 'Company settings updated');
 
         return response()->json([
             'success' => true,

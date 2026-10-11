@@ -44,4 +44,23 @@ class CompanySetting extends Model
     protected $casts = [
         'gst_api_enabled' => 'boolean',
     ];
+
+    /**
+     * Legacy settings lookup: prefer the active company column, then the
+     * single company_settings row, otherwise the caller's default.
+     */
+    public static function getValue(string $key, $default = null)
+    {
+        $company = Company::current();
+        if ($company && $company->hasAttribute($key)) {
+            return $company->getAttribute($key) ?? $default;
+        }
+
+        $row = static::query()->first();
+        if ($row && $row->hasAttribute($key)) {
+            return $row->getAttribute($key) ?? $default;
+        }
+
+        return $default;
+    }
 }

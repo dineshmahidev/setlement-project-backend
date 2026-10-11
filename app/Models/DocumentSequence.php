@@ -18,6 +18,11 @@ class DocumentSequence extends Model
         'branch_id',
     ];
 
+    public function branch()
+    {
+        return $this->belongsTo(Branch::class);
+    }
+
     /**
      * Generate next document number safely with DB lock
      * 
@@ -34,13 +39,20 @@ class DocumentSequence extends Model
         $branch = $branchId ? Branch::find($branchId) : null;
         $branchCode = $branch ? $branch->branch_code : 'HQ';
 
-        $companySetting = CompanySetting::first();
-        
+        // Prefixes belong to the company that owns the branch (or the active company)
+        $company = $branch?->company;
+        if (! $company && app()->bound('activeCompany')) {
+            $company = app('activeCompany');
+        }
+        if (! $company) {
+            $company = Company::query()->active()->orderBy('sort_order')->first();
+        }
+
         $prefix = match($documentType) {
-            'settlement' => $companySetting?->settlement_prefix ?? 'SB',
-            'debit_note' => $companySetting?->debit_note_prefix ?? 'DN',
-            'credit_note' => $companySetting?->credit_note_prefix ?? 'CN',
-            'invoice' => $companySetting?->invoice_prefix ?? 'INV',
+            'settlement' => $company?->settlement_prefix ?? 'SB',
+            'debit_note' => $company?->debit_note_prefix ?? 'DN',
+            'credit_note' => 'CN',
+            'invoice' => $company?->invoice_prefix ?? 'INV',
             default => strtoupper($documentType),
         };
 

@@ -12,7 +12,7 @@ class ItemController extends Controller
 
     public function index(Request $request)
     {
-        $query = Item::with(['category', 'unit'])->orderBy('name');
+        $query = $this->scopeCompany(Item::query())->with(['category', 'unit'])->orderBy('name');
         if ($request->filled('search')) {
             $s = $request->search;
             $query->where(fn ($q) => $q->where('name', 'like', "%$s%")->orWhere('code', 'like', "%$s%"));
@@ -28,9 +28,13 @@ class ItemController extends Controller
 
     public function store(Request $request)
     {
+        $companyId = $this->activeCompanyId();
         $data = $request->validate([
-            'code' => ['required', 'string', 'max:30', 'unique:items,code'],
+            'code' => ['required', 'string', 'max:30', 'unique:items,code,NULL,id,company_id,'.($companyId ?? 'NULL')],
             'name' => ['required', 'string', 'max:200'],
+            'material_type' => ['nullable', 'string', 'max:30'],
+            'default_oil_pct' => ['nullable', 'numeric', 'min:0', 'max:100'],
+            'description' => ['nullable', 'string'],
             'category_id' => ['nullable', 'exists:item_categories,id'],
             'unit_id' => ['nullable', 'exists:units,id'],
             'min_stock_level' => ['nullable', 'numeric', 'min:0'],
@@ -38,21 +42,28 @@ class ItemController extends Controller
             'status' => ['nullable', 'in:ACTIVE,INACTIVE'],
         ]);
 
-        $item = Item::create($data);
+        $item = Item::create($data + ['company_id' => $companyId]);
         $this->audit->log('CREATE', 'Item', $item->id, null, $item->toArray());
         return response()->json($item->load(['category', 'unit']), 201);
     }
 
     public function show(Item $item)
     {
+        $this->guardCompanyOwnership($item);
+
         return response()->json($item->load(['category', 'unit']));
     }
 
     public function update(Request $request, Item $item)
     {
+        $this->guardCompanyOwnership($item);
+
         $data = $request->validate([
-            'code' => ['sometimes', 'string', 'max:30', 'unique:items,code,'.$item->id],
+            'code' => ['sometimes', 'string', 'max:30', 'unique:items,code,'.$item->id.',id,company_id,'.($item->company_id ?? 'NULL')],
             'name' => ['sometimes', 'string', 'max:200'],
+            'material_type' => ['nullable', 'string', 'max:30'],
+            'default_oil_pct' => ['nullable', 'numeric', 'min:0', 'max:100'],
+            'description' => ['nullable', 'string'],
             'category_id' => ['nullable', 'exists:item_categories,id'],
             'unit_id' => ['nullable', 'exists:units,id'],
             'min_stock_level' => ['nullable', 'numeric', 'min:0'],
@@ -68,6 +79,8 @@ class ItemController extends Controller
 
     public function destroy(Item $item)
     {
+        $this->guardCompanyOwnership($item);
+
         $this->audit->log('ARCHIVE', 'Item', $item->id, $item->toArray(), ['status' => 'INACTIVE']);
         $item->update(['status' => 'INACTIVE']);
         return response()->json(['message' => 'Item archived']);

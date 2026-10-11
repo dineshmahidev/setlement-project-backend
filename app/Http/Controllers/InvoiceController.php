@@ -14,7 +14,8 @@ class InvoiceController extends Controller
 {
     public function index(Request $request)
     {
-        $query = Invoice::with(['branch', 'vendor', 'product', 'creator']);
+        // Invoices are isolated through their branch (which belongs to a company)
+        $query = $this->scopeBranches(Invoice::with(['branch', 'vendor', 'product', 'creator']));
 
         if ($request->filled('branch_id')) {
             $query->where('branch_id', $request->branch_id);
@@ -55,6 +56,8 @@ class InvoiceController extends Controller
     public function store(InvoiceRequest $request)
     {
         $data = $request->validated();
+
+        $this->guardBranchAccess($data['branch_id'] ?? null);
 
         $invoice = DB::transaction(function () use ($data) {
             // Auto number if not provided
@@ -118,6 +121,7 @@ class InvoiceController extends Controller
 
     public function show(Invoice $invoice)
     {
+        $this->guardBranchOwnership($invoice);
         $invoice->load(['branch', 'vendor', 'product', 'settlements', 'debitNotes']);
 
         return response()->json([
@@ -128,6 +132,8 @@ class InvoiceController extends Controller
 
     public function update(InvoiceRequest $request, Invoice $invoice)
     {
+        $this->guardBranchOwnership($invoice);
+
         if ($invoice->status === 'cancelled') {
             return response()->json([
                 'success' => false,
@@ -178,6 +184,8 @@ class InvoiceController extends Controller
 
     public function cancel(Request $request, Invoice $invoice)
     {
+        $this->guardBranchOwnership($invoice);
+
         $request->validate([
             'cancellation_reason' => 'required|string|min:5',
         ]);

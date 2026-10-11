@@ -3,7 +3,6 @@
 namespace Database\Seeders;
 
 use App\Models\ChargeType;
-use App\Models\CompanySetting;
 use App\Models\FieldConfiguration;
 use Illuminate\Database\Seeder;
 
@@ -11,33 +10,6 @@ class ConfigSeeder extends Seeder
 {
     public function run(): void
     {
-        // Company settings defaults
-        $settings = [
-            'company_name' => 'S.V.M.A. Agro Products',
-            'address' => 'Tiruppur, Tamil Nadu, India',
-            'gstin' => '33AABCS1429B1Z0',
-            'cin' => 'U01100TN2020PTC000000',
-            'email' => 'info@svmaagro.com',
-            'website' => 'https://svmaagro.com',
-            'phone' => '0421-2200000',
-            'default_gst' => 'CGST_SGST:5',
-            'invoice_prefix' => 'SVMA',
-            'debit_note_prefix' => 'DN',
-            'bill_number_format' => '{PREFIX}/{FY}/{SEQ}',
-            'currency' => 'INR',
-            'pdf_header' => 'S.V.M.A. Agro Products — Settlement Statement',
-            'pdf_footer' => 'Computer generated document. This is a computer generated settlement bill.',
-            'signature' => 'For S.V.M.A. Agro Products',
-            'seal' => '',
-            'inventory_quantity_source' => 'FINAL_WEIGHT',
-            'allow_negative_stock' => '0',
-        ];
-
-        foreach ($settings as $key => $value) {
-            $type = $key === 'allow_negative_stock' ? 'BOOLEAN' : 'TEXT';
-            CompanySetting::updateOrCreate(['key' => $key], ['value' => $value, 'type' => $type]);
-        }
-
         // Field configurations — Settlement Bill (spec §28)
         $billFields = [
             ['field_name' => 'Lot Number', 'field_key' => 'lot_number', 'visible' => true, 'required' => false, 'mode' => 'MANUAL', 'sort_order' => 1],

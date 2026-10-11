@@ -2,6 +2,8 @@
 
 namespace App\Services;
 
+use App\Models\Branch;
+use App\Models\Company;
 use App\Models\CompanySetting;
 use App\Models\DebitNote;
 use App\Models\Settlement;
@@ -9,20 +11,41 @@ use Barryvdh\DomPDF\Facade\Pdf;
 
 class PdfService
 {
+    /**
+     * Resolve the company that must appear on a PDF:
+     * branch -> active company (from X-Company-Id) -> first active company.
+     */
+    public function resolveCompany(?int $branchId = null): Company
+    {
+        $company = $branchId ? Branch::find($branchId)?->company : null;
+
+        if (! $company && app()->bound('activeCompany')) {
+            $company = app('activeCompany');
+        }
+
+        if (! $company) {
+            $company = Company::query()->active()->orderBy('sort_order')->first();
+        }
+
+        if (! $company) {
+            $legacy = CompanySetting::first();
+            $company = new Company($legacy ? $legacy->only([
+                'company_name', 'address', 'city', 'district', 'state', 'pincode',
+                'gstin', 'pan', 'phone', 'email', 'terms_conditions',
+                'authorized_signatory_title',
+            ]) : []);
+            $company->company_name = $company->company_name ?: 'Company';
+        }
+
+        return $company;
+    }
+
     public function generateSettlementBillPdf(Settlement $settlement)
     {
         $settlement->load(['branch', 'vendor', 'product', 'invoice', 'qualityTests', 'charges', 'debitNotes.items']);
-        $company = CompanySetting::first() ?? new CompanySetting([
-            'company_name' => 'LAXMI TRADERS',
-            'tagline' => 'AGRO PRODUCTS & GRAINS',
-            'sub_tagline' => 'Quality Grains | Trusted Trade | Sustainable Tomorrow',
-            'gstin' => '33BWLPK6363A3ZN',
-            'address' => 'No 54 – PALLAVARAYAN PALAYAM, VEERANAMPALAYAM, P.O., KANGEYAM',
-            'city' => 'KANGEYAM',
-            'pincode' => '620010',
-            'state' => 'Tamil Nadu',
-            'state_code' => '33',
-        ]);
+
+        $company = $this->resolveCompany($settlement->branch_id);
+        $company->state_code = $company->state_code ?: substr((string) $company->gstin, 0, 2);
 
         $debitNote = $settlement->debitNotes->first();
         $noteType = $debitNote ? ($debitNote->transaction_type ?: 'debit') : 'debit';
@@ -94,12 +117,9 @@ class PdfService
     public function generateDebitNotePdf(DebitNote $debitNote)
     {
         $debitNote->load(['branch', 'vendor', 'settlement', 'invoice', 'items']);
-        $company = CompanySetting::first() ?? new CompanySetting([
-            'company_name' => 'LAXMI TRADERS',
-            'gstin' => '33BWLPK6363A3ZN',
-            'state' => 'Tamil Nadu',
-            'state_code' => '33',
-        ]);
+
+        $company = $this->resolveCompany($debitNote->branch_id);
+        $company->state_code = $company->state_code ?: substr((string) $company->gstin, 0, 2);
 
         $pdf = Pdf::loadView('pdf.debit_note', [
             'debitNote' => $debitNote,

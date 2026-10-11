@@ -3,12 +3,13 @@
 namespace App\Http\Controllers;
 
 use App\Models\InventoryTransaction;
+use App\Services\InventoryLedgerService;
 use App\Services\InventoryService;
 use Illuminate\Http\Request;
 
 class InventoryController extends Controller
 {
-    public function __construct(private InventoryService $service) {}
+    public function __construct(private InventoryService $service, private InventoryLedgerService $ledger) {}
 
     public function index(Request $request)
     {
@@ -30,6 +31,18 @@ class InventoryController extends Controller
         if ($request->filled('date_to')) $query->whereDate('date', '<=', $request->date_to);
 
         return response()->json($query->paginate($request->get('per_page', 15)));
+    }
+
+    /** Real inventory KPIs for the dashboard (company-scoped). */
+    public function dashboardKpis(Request $request)
+    {
+        $companyId = $this->activeCompanyId();
+        $branchId = $request->branch_id ? (int) $request->branch_id : null;
+        if (! $companyId) {
+            return response()->json(['message' => 'No active company.'], 422);
+        }
+        $data = $this->ledger->dashboardKpis($companyId, $branchId, $request->from_date, $request->to_date);
+        return response()->json($data);
     }
 
     public function stock(Request $request)
@@ -223,6 +236,28 @@ class InventoryController extends Controller
             return response()->json($tx, 201);
         } catch (\Throwable $e) {
             return $this->error($e, 422);
+        }
+    }
+
+    /** Lot-aware stock transfer (godown to godown) — new inventory engine. */
+    public function transferLot(Request $request)
+    {
+        $data = $request->validate([
+            'company_id' => ['nullable', 'integer'],
+            'date' => ['nullable', 'date'],
+            'source_branch_id' => ['required', 'exists:branches,id'],
+            'dest_branch_id' => ['required', 'exists:branches,id', 'different:source_branch_id'],
+            'lot_id' => ['required', 'exists:lots,id'],
+            'quantity' => ['required', 'numeric', 'gt:0'],
+            'reference' => ['nullable', 'string', 'max:100'],
+        ]);
+        $data['company_id'] = $data['company_id'] ?? $this->activeCompanyId();
+
+        try {
+            $result = $this->ledger->transfer($data, $request->user()->id);
+            return response()->json(['success' => true, 'data' => $result], 201);
+        } catch (\Throwable $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
         }
     }
 

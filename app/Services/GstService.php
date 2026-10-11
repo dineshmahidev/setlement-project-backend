@@ -2,7 +2,7 @@
 
 namespace App\Services;
 
-use App\Models\CompanySetting;
+use App\Models\Company;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -42,8 +42,8 @@ class GstService
             'api_source' => 'local_parser',
         ];
 
-        // Check if external API credentials are configured in CompanySetting or .env
-        $companySetting = CompanySetting::first();
+        // Check if external API credentials are configured for the active company or .env
+        $companySetting = \App\Models\Company::current();
         $apiKey = env('GST_API_KEY') ?: $companySetting?->gst_api_key;
         $apiSecret = env('GST_API_SECRET') ?: $companySetting?->gst_api_secret;
         $apiProvider = env('GST_API_PROVIDER') ?: $companySetting?->gst_api_provider ?: 'generic';

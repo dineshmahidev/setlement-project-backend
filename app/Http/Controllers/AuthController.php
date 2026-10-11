@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\AuditLog;
+use App\Models\Company;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -16,9 +17,10 @@ class AuthController extends Controller
         $request->validate([
             'email' => 'required|email',
             'password' => 'required|string',
+            'company_id' => 'nullable',
         ]);
 
-        $user = User::with(['role.permissions', 'permissions', 'defaultBranch', 'branches'])
+        $user = User::with(['role.permissions', 'permissions', 'defaultBranch', 'branches.company', 'companies'])
             ->where('email', $request->email)
             ->first();
 
@@ -37,20 +39,6 @@ class AuthController extends Controller
 
         $token = $user->createToken('auth-token')->plainTextToken;
 
-        // Collect all permissions
-        $permissions = [];
-        if ($user->role) {
-            foreach ($user->role->permissions as $p) {
-                $permissions[] = $p->name;
-            }
-        }
-        foreach ($user->permissions as $p) {
-            if ($p->pivot->granted) {
-                $permissions[] = $p->name;
-            }
-        }
-        $permissions = array_unique($permissions);
-
         AuditLog::logAction('logged_in', 'User', $user->id, $user->email, null, null, 'User logged in successfully');
 
         return response()->json([
@@ -58,57 +46,18 @@ class AuthController extends Controller
             'message' => 'Login successful',
             'data' => [
                 'token' => $token,
-                'user' => [
-                    'id' => $user->id,
-                    'name' => $user->name,
-                    'email' => $user->email,
-                    'role' => $user->role ? [
-                        'id' => $user->role->id,
-                        'name' => $user->role->name,
-                        'label' => $user->role->label,
-                    ] : null,
-                    'default_branch' => $user->defaultBranch,
-                    'branches' => $user->branches,
-                    'permissions' => $permissions,
-                    'is_super_admin' => $user->hasRole(['super_admin', 'superadmin', 'Super Admin']),
-                ],
+                'user' => $this->userPayload($user, $request->input('company_id')),
             ],
         ]);
     }
 
     public function me(Request $request)
     {
-        $user = $request->user()->load(['role.permissions', 'permissions', 'defaultBranch', 'branches']);
-        
-        $permissions = [];
-        if ($user->role) {
-            foreach ($user->role->permissions as $p) {
-                $permissions[] = $p->name;
-            }
-        }
-        foreach ($user->permissions as $p) {
-            if ($p->pivot->granted) {
-                $permissions[] = $p->name;
-            }
-        }
-        $permissions = array_unique($permissions);
+        $user = $request->user()->loadMissing(['role.permissions', 'permissions', 'defaultBranch', 'branches.company', 'companies']);
 
         return response()->json([
             'success' => true,
-            'data' => [
-                'id' => $user->id,
-                'name' => $user->name,
-                'email' => $user->email,
-                'role' => $user->role ? [
-                    'id' => $user->role->id,
-                    'name' => $user->role->name,
-                    'label' => $user->role->label,
-                ] : null,
-                'default_branch' => $user->defaultBranch,
-                'branches' => $user->branches,
-                'permissions' => $permissions,
-                'is_super_admin' => $user->hasRole(['super_admin', 'superadmin', 'Super Admin']),
-            ],
+            'data' => $this->userPayload($user, request('active_company_id')),
         ]);
     }
 
@@ -124,5 +73,92 @@ class AuthController extends Controller
             'success' => true,
             'message' => 'Logged out successfully',
         ]);
+    }
+
+    private function userPayload(User $user, $requestedCompanyId = null): array
+    {
+        $permissions = $this->collectPermissions($user);
+
+        $allowedCompanyIds = $user->allowedCompanyIds(); // null = all
+        $companies = $user->companies
+            ->sortBy('sort_order')
+            ->filter(fn ($c) => $allowedCompanyIds === null || in_array($c->id, $allowedCompanyIds, true))
+            ->values();
+
+        if ($allowedCompanyIds === null) {
+            $companies = \App\Models\Company::active()
+                ->orderBy('sort_order')
+                ->orderBy('company_name')
+                ->get();
+        }
+
+        $activeCompany = $this->resolveActiveCompany($user, $companies, $requestedCompanyId);
+
+        $branches = $user->branches
+            ->filter(fn ($b) => ! $activeCompany || (int) $b->company_id === (int) $activeCompany->id)
+            ->values();
+
+        return [
+            'id' => $user->id,
+            'name' => $user->name,
+            'email' => $user->email,
+            'employee_id' => $user->employee_id,
+            'mobile' => $user->mobile,
+            'role' => $user->role ? [
+                'id' => $user->role->id,
+                'name' => $user->role->name,
+                'label' => $user->role->label,
+            ] : null,
+            'default_branch' => $user->defaultBranch,
+            'companies' => $companies->map(fn (Company $c) => $this->companyPayload($c))->values(),
+            'active_company' => $activeCompany ? $this->companyPayload($activeCompany) : null,
+            'branches' => $branches->values(),
+            'allowed_company_ids' => $allowedCompanyIds,
+            'allowed_branch_ids' => $user->allowedBranchIds($activeCompany ? (int) $activeCompany->id : null),
+            'permissions' => $permissions,
+            'is_super_admin' => $user->isSuperAdmin(),
+        ];
+    }
+
+    private function resolveActiveCompany(User $user, $companies, $requestedCompanyId = null): ?Company
+    {
+        if ($requestedCompanyId) {
+            $found = $companies->firstWhere('id', (int) $requestedCompanyId);
+            if ($found) {
+                return $found;
+            }
+        }
+
+        return $companies->first();
+    }
+
+    private function companyPayload(Company $company): array
+    {
+        return [
+            'id' => $company->id,
+            'code' => $company->code,
+            'slug' => $company->slug,
+            'company_name' => $company->company_name,
+            'short_name' => $company->short_name,
+            'gstin' => $company->gstin,
+            'city' => $company->city,
+            'status' => $company->status,
+            'panel_url' => '/panel/' . $company->slug,
+        ];
+    }
+
+    private function collectPermissions(User $user): array
+    {
+        $permissions = [];
+        foreach ($user->role->permissions ?? [] as $p) {
+            $permissions[] = $p->name;
+        }
+        foreach ($user->permissions as $p) {
+            if ($p->pivot->granted) {
+                $permissions[] = $p->name;
+            }
+        }
+
+        return array_values(array_unique($permissions));
     }
 }

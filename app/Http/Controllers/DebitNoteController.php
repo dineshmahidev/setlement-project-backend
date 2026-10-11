@@ -27,7 +27,8 @@ class DebitNoteController extends Controller
 
     public function index(Request $request)
     {
-        $query = DebitNote::with(['branch', 'vendor', 'settlement', 'invoice', 'creator']);
+        // Debit notes are isolated through their branch (which belongs to a company)
+        $query = $this->scopeBranches(DebitNote::with(['branch', 'vendor', 'settlement', 'invoice', 'creator']));
 
         if ($request->filled('branch_id')) {
             $query->where('branch_id', $request->branch_id);
@@ -68,6 +69,8 @@ class DebitNoteController extends Controller
     public function store(DebitNoteRequest $request)
     {
         $data = $request->validated();
+
+        $this->guardBranchAccess($data['branch_id'] ?? null);
 
         $debitNote = DB::transaction(function () use ($data) {
             $branchId = $data['branch_id'];
@@ -155,6 +158,8 @@ class DebitNoteController extends Controller
 
     public function show(DebitNote $debitNote)
     {
+        $this->guardBranchOwnership($debitNote);
+
         $debitNote->load(['branch', 'vendor', 'settlement', 'invoice', 'items', 'creator']);
 
         return response()->json([
@@ -165,6 +170,8 @@ class DebitNoteController extends Controller
 
     public function update(DebitNoteRequest $request, DebitNote $debitNote)
     {
+        $this->guardBranchOwnership($debitNote);
+
         if ($debitNote->status === 'cancelled') {
             return response()->json([
                 'success' => false,
@@ -229,6 +236,8 @@ class DebitNoteController extends Controller
 
     public function cancel(Request $request, DebitNote $debitNote)
     {
+        $this->guardBranchOwnership($debitNote);
+
         $request->validate([
             'cancellation_reason' => 'required|string|min:5',
         ]);
@@ -272,6 +281,8 @@ class DebitNoteController extends Controller
 
     public function pdf(DebitNote $debitNote)
     {
+        $this->guardBranchOwnership($debitNote);
+
         $pdf = $this->pdfService->generateDebitNotePdf($debitNote);
         $fileName = str_replace(['/', '\\'], '-', $debitNote->debit_note_number) . '.pdf';
 

@@ -2,7 +2,7 @@
 
 namespace App\Services;
 
-use App\Models\CompanySetting;
+use App\Models\Company;
 
 class SettlementCalculationService
 {
@@ -16,8 +16,7 @@ class SettlementCalculationService
     {
         $roundingMode = $data['rounding_mode'] ?? null;
         if (!$roundingMode) {
-            $setting = CompanySetting::first();
-            $roundingMode = $setting?->rounding_mode ?? 'nearest_rupee';
+            $roundingMode = Company::current()?->rounding_mode ?? 'nearest_rupee';
         }
 
         // 1. Final Weight in MT & KG

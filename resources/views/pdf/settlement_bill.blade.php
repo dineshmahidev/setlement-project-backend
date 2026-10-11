@@ -191,14 +191,14 @@
                 </svg>
             </td>
             <td class="company-name-cell">
-                <div class="company-title">{{ $company->company_name ?? 'LAXMI TRADERS' }}</div>
-                <div class="company-tagline">{{ $company->tagline ?? 'AGRO PRODUCTS & GRAINS' }}</div>
-                <div class="company-subtag">{{ $company->sub_tagline ?? 'Quality Grains | Trusted Trade | Sustainable Tomorrow' }}</div>
+                <div class="company-title">{{ $company->company_name }}</div>
+                <div class="company-tagline">{{ $company->tagline }}</div>
+                <div class="company-subtag">{{ $company->sub_tagline }}</div>
             </td>
             <td class="company-contact-cell">
-                <div>{{ $company->address ?? 'No 54 – PALLAVARAYAN PALAYAM, VEERANAMPALAYAM, P.O., KANGEYAM' }}, {{ $company->city ?? 'KANGEYAM' }}, {{ $company->state ?? 'Tamil Nadu' }}, {{ $company->pincode ?? '620010' }}</div>
-                <div><strong>GSTIN :</strong> <span class="text-bold">{{ $company->gstin ?? '33BWLPK6363A3ZN' }}</span></div>
-                <div><strong>State :</strong> {{ $company->state ?? 'Tamil Nadu' }} &nbsp;|&nbsp; <strong>State Code :</strong> {{ $company->state_code ?? '33' }}</div>
+                <div>{{ collect([$company->address, $company->city, $company->state, $company->pincode])->filter()->implode(', ') }}</div>
+                <div><strong>GSTIN :</strong> <span class="text-bold">{{ $company->gstin ?: '-' }}</span></div>
+                <div><strong>State :</strong> {{ $company->state ?: '-' }} &nbsp;|&nbsp; <strong>State Code :</strong> {{ $company->state_code ?: '33' }}</div>
             </td>
         </tr>
     </table>
@@ -220,14 +220,14 @@
             <!-- Left Vendor Info (50%) -->
             <td style="width: 50%; vertical-align: top; padding: 3px 5px;">
                 <div class="section-label">Vendor details</div>
-                <div class="vendor-name-lg">{{ $settlement->vendor->vendor_name ?? 'SRI RAM AGRO' }}</div>
+                <div class="vendor-name-lg">{{ $settlement->vendor->vendor_name ?? '-' }}</div>
                 <div style="font-size: 7pt; color: #2d3748; line-height: 1.25;">
-                    {{ $settlement->vendor->address ?? 'ARIYALUR' }}<br>
-                    {{ $settlement->vendor->city ?? 'ARIYALUR' }} {{ $settlement->vendor->pincode ? ', ' . $settlement->vendor->pincode : '' }}<br>
+                    {{ $settlement->vendor->address ?? '' }}<br>
+                    {{ $settlement->vendor->city ?? '' }} {{ $settlement->vendor->pincode ? ', ' . $settlement->vendor->pincode : '' }}<br>
                     <strong>GSTIN :</strong> <span class="text-bold">{{ $settlement->vendor->gstin ?? '-' }}</span>
                 </div>
                 <div style="margin-top: 3px; padding-top: 2px; border-top: 0.6pt solid #cbd5e0; font-size: 7.5pt;">
-                    <strong>Product &nbsp;&nbsp;&nbsp;&nbsp;</strong> <span class="text-bold text-navy">{{ $settlement->product->product_name ?? 'BOILED BRAN' }}</span>
+                    <strong>Product &nbsp;&nbsp;&nbsp;&nbsp;</strong> <span class="text-bold text-navy">{{ $settlement->product->product_name ?? '-' }}</span>
                 </div>
             </td>
 
@@ -407,11 +407,11 @@
                 <!-- Left Vendor Info (50%) -->
                 <td style="width: 50%; vertical-align: top; padding: 3px 5px;">
                     <div class="section-label">Vendor details</div>
-                    <div class="vendor-name-lg">{{ $settlement->vendor->vendor_name ?? 'LAXMI TRADERS' }}</div>
+                    <div class="vendor-name-lg">{{ $settlement->vendor->vendor_name ?? '-' }}</div>
                     <div style="font-size: 7pt; color: #2d3748; line-height: 1.25;">
-                        {{ $settlement->vendor->address ?? 'No 54 – PALLAVARAYAN PALAYAM, VEERANAMPALAYAM, P.O., KANGEYAM' }}<br>
-                        {{ $settlement->vendor->city ?? 'KANGEYAM' }} {{ $settlement->vendor->pincode ? ', ' . $settlement->vendor->pincode : '' }}<br>
-                        <strong>GSTIN :</strong> <span class="text-bold">{{ $settlement->vendor->gstin ?? '33BWLPK6363A3ZN' }}</span>
+                        {{ $settlement->vendor->address ?? '' }}<br>
+                        {{ $settlement->vendor->city ?? '' }} {{ $settlement->vendor->pincode ? ', ' . $settlement->vendor->pincode : '' }}<br>
+                        <strong>GSTIN :</strong> <span class="text-bold">{{ $settlement->vendor->gstin ?? '-' }}</span>
                     </div>
                 </td>
 
@@ -536,7 +536,7 @@
         </div>
         <div style="display: table-cell; width: 50%; text-align: right; vertical-align: bottom;">
             <div style="display: inline-block; border-top: 1.2pt solid #0b3558; padding-top: 2px; font-size: 7.5pt; font-weight: bold; color: #0b3558; width: 170px; text-align: center;">
-                For {{ $company->company_name ?? 'LAXMI TRADERS' }}
+                For {{ $company->company_name }}
             </div>
         </div>
     </div>

@@ -33,6 +33,7 @@ class VendorRequest extends FormRequest
             'account_number' => ['nullable', 'string', 'max:50'],
             'ifsc' => ['nullable', 'string', 'max:20'],
             'opening_balance' => ['nullable', 'numeric'],
+            'party_type' => ['nullable', 'in:supplier,customer,both'],
             'status' => ['nullable', 'in:active,inactive'],
         ];
     }

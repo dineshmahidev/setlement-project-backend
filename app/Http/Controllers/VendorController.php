@@ -19,7 +19,7 @@ class VendorController extends Controller
 
     public function index(Request $request)
     {
-        $query = Vendor::query();
+        $query = $this->scopeCompany(Vendor::query());
 
         if ($request->filled('search')) {
             $search = $request->search;
@@ -61,7 +61,8 @@ class VendorController extends Controller
     public function search(Request $request)
     {
         $term = $request->get('q', '');
-        $vendors = Vendor::where('status', 'active')
+        $vendors = $this->scopeCompany(Vendor::query())
+            ->where('status', 'active')
             ->where(function ($q) use ($term) {
                 $q->where('vendor_name', 'like', "%{$term}%")
                   ->orWhere('vendor_code', 'like', "%{$term}%")
@@ -94,7 +95,10 @@ class VendorController extends Controller
 
     public function store(VendorRequest $request)
     {
-        $vendor = Vendor::create($request->validated());
+        $data = $request->validated();
+        $data['company_id'] = $this->activeCompanyId();
+
+        $vendor = Vendor::create($data);
 
         AuditLog::logAction('created', 'Vendor', $vendor->id, $vendor->vendor_code, null, $vendor->toArray(), 'Vendor created');
 
@@ -107,6 +111,7 @@ class VendorController extends Controller
 
     public function show(Vendor $vendor)
     {
+        $this->guardCompanyOwnership($vendor);
         $vendor->loadCount(['settlements', 'invoices', 'debitNotes']);
         $vendor->current_balance = $vendor->current_balance;
 
@@ -118,6 +123,7 @@ class VendorController extends Controller
 
     public function update(VendorRequest $request, Vendor $vendor)
     {
+        $this->guardCompanyOwnership($vendor);
         $old = $vendor->toArray();
         $vendor->update($request->validated());
 
@@ -132,6 +138,8 @@ class VendorController extends Controller
 
     public function destroy(Vendor $vendor)
     {
+        $this->guardCompanyOwnership($vendor);
+
         if ($vendor->settlements()->exists() || $vendor->invoices()->exists() || $vendor->debitNotes()->exists()) {
             return response()->json([
                 'success' => false,

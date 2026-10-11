@@ -22,14 +22,19 @@ class DashboardController extends Controller
         $endDate = $request->get('to_date', Carbon::now()->endOfMonth()->toDateString());
 
         $user = $request->user();
-        $branchId = $request->get('branch_id') ?? $request->header('X-Branch-Id');
+        $branchId = $request->get('branch_id') ?: $request->header('X-Branch-Id');
 
-        // If no explicit branch_id and user is not super admin, filter by user's assigned godowns/branches
-        if (!$branchId && $user) {
-            $allowed = $user->allowedBranchIds();
-            if ($allowed !== null) {
-                $branchId = $allowed;
-            }
+        $allowedBranchIds = $user ? $user->allowedBranchIds($this->activeCompanyId()) : null;
+
+        // Clamp a requested branch to what the user may see inside this company
+        if ($branchId && is_array($allowedBranchIds)) {
+            $requested = array_map('intval', (array) $branchId);
+            $branchId = array_values(array_intersect($requested, array_map('intval', $allowedBranchIds))) ?: $allowedBranchIds;
+        }
+
+        // No explicit branch: fall back to every branch the user may see
+        if (! $branchId && $user) {
+            $branchId = $allowedBranchIds;
         }
 
         $applyBranch = function ($query, $column = 'branch_id') use ($branchId) {
@@ -40,10 +45,14 @@ class DashboardController extends Controller
             return $query->where($column, $branchId);
         };
 
-        // Card statistics
-        $totalVendors = Vendor::where('status', 'active')->count();
+        $applyCompany = function ($query, $column = 'company_id') {
+            return $this->scopeCompany($query, $column);
+        };
 
-        $totalBranchesQuery = Branch::where('status', 'active');
+        // Card statistics
+        $totalVendors = $applyCompany(Vendor::where('status', 'active'))->count();
+
+        $totalBranchesQuery = $applyCompany(Branch::where('status', 'active'));
         if ($branchId) {
             $applyBranch($totalBranchesQuery, 'id');
         }

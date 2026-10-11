@@ -85,7 +85,7 @@ class MasterDemoSeeder extends Seeder
         foreach ($vehicles as $v) {
             Vehicle::updateOrCreate(['number' => $v['number']], [
                 'type' => $v['type'],
-                'owner_name' => 'SVMA Fleet',
+                'owner_name' => 'Laxmi Fleet',
                 'driver_name' => $v['driver'],
                 'driver_mobile' => $v['mobile'],
                 'rc_number' => 'RC-'.substr($v['number'], -4),

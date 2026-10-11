@@ -103,7 +103,7 @@ return new class extends Migration
 
         Schema::create('company_settings', function (Blueprint $table) {
             $table->id();
-            $table->string('company_name')->default('SVMA AGRO PRODUCTS PRIVATE LIMITED');
+            $table->string('company_name')->default('LAXMI TRADERS');
             $table->string('trade_name')->nullable();
             $table->string('logo_path')->nullable();
             $table->text('address')->nullable();

@@ -8,8 +8,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class Item extends Model
 {
     protected $fillable = [
-        'code', 'name', 'category_id', 'unit_id',
-        'min_stock_level', 'max_stock_level', 'status',
+        'company_id', 'code', 'name', 'material_type', 'default_oil_pct', 'description',
+        'category_id', 'unit_id', 'min_stock_level', 'max_stock_level', 'status',
     ];
 
     protected function casts(): array
@@ -17,6 +17,7 @@ class Item extends Model
         return [
             'min_stock_level' => 'decimal:3',
             'max_stock_level' => 'decimal:3',
+            'default_oil_pct' => 'decimal:2',
         ];
     }
 
@@ -28,5 +29,15 @@ class Item extends Model
     public function unit(): BelongsTo
     {
         return $this->belongsTo(Unit::class);
+    }
+
+    public function company(): BelongsTo
+    {
+        return $this->belongsTo(Company::class);
+    }
+
+    public function lots()
+    {
+        return $this->hasMany(Lot::class);
     }
 }

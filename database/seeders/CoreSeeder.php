@@ -91,48 +91,17 @@ class CoreSeeder extends Seeder
             $role->permissions()->sync($ids);
         }
 
-        // Branches
-        $laxmiTraders = Branch::updateOrCreate(['branch_code' => 'LT-TRY'], [
-            'branch_name' => 'LAXMI TRADERS',
-            'address' => 'Ariyamangalam',
-            'city' => 'Tiruchirappalli',
-            'district' => 'Tiruchirappalli',
-            'state' => 'Tamil Nadu',
-            'pincode' => '620010',
-            'gstin' => '33BWLKP6363A3ZN',
-            'phone' => '0431-2456789',
-            'email' => 'laxmitraders@example.com',
-            'status' => 'active',
-        ]);
+        // Companies (each company owns its own branches)
+        $this->call(CompanySeeder::class);
 
-        $smTraders = Branch::updateOrCreate(['branch_code' => 'SM-TRY'], [
-            'branch_name' => 'S M TRADERS',
-            'address' => 'Ariyamangalam',
-            'city' => 'Tiruchirappalli',
-            'district' => 'Tiruchirappalli',
-            'state' => 'Tamil Nadu',
-            'pincode' => '620010',
-            'gstin' => '33DTNPM3407G1ZQ',
-            'phone' => '0431-2456790',
-            'email' => 'smtraders@example.com',
-            'status' => 'active',
-        ]);
+        $laxmiTraders = Branch::where('branch_code', 'BR-LT01')->firstOrFail();
+        $smTraders = Branch::where('branch_code', 'BR-SM01')->firstOrFail();
+        $shrieeFeeds = Branch::where('branch_code', 'BR-SF01')->firstOrFail();
 
-        $shrieeFeeds = Branch::updateOrCreate(['branch_code' => 'SF-MNP'], [
-            'branch_name' => 'SHRIEE FEEDS',
-            'address' => 'Manapparai / Usilampatti',
-            'city' => 'Manapparai',
-            'district' => 'Tiruchirappalli',
-            'state' => 'Tamil Nadu',
-            'pincode' => '621306',
-            'gstin' => '33BOZPS3759G1Z5',
-            'phone' => '0431-2456791',
-            'email' => 'shrieefeeds@example.com',
-            'status' => 'active',
-        ]);
+        $allCompanies = \App\Models\Company::pluck('id')->all();
 
         // Admin user
-        User::updateOrCreate(['email' => 'admin@laxmitraders.com'], [
+        $admin = User::updateOrCreate(['email' => 'admin@laxmitraders.com'], [
             'name' => 'Laxmi Administrator',
             'employee_id' => 'EMP001',
             'mobile' => '9999999999',
@@ -141,6 +110,7 @@ class CoreSeeder extends Seeder
             'default_branch_id' => $laxmiTraders->id,
             'status' => 'active',
         ]);
+        $admin->companies()->sync($allCompanies);
 
         $bm = User::updateOrCreate(['email' => 'manager@laxmitraders.com'], [
             'name' => 'Branch Manager',
@@ -151,7 +121,8 @@ class CoreSeeder extends Seeder
             'default_branch_id' => $laxmiTraders->id,
             'status' => 'active',
         ]);
-        $bm->branches()->sync([$laxmiTraders->id, $smTraders->id]);
+        $bm->branches()->sync([$laxmiTraders->id]);
+        $bm->companies()->sync([$laxmiTraders->company_id]);
 
         $inv = User::updateOrCreate(['email' => 'inventory@laxmitraders.com'], [
             'name' => 'Inventory Staff',
@@ -163,5 +134,6 @@ class CoreSeeder extends Seeder
             'status' => 'active',
         ]);
         $inv->branches()->sync([$laxmiTraders->id, $smTraders->id, $shrieeFeeds->id]);
+        $inv->companies()->sync($allCompanies);
     }
 }

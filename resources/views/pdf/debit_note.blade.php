@@ -105,11 +105,11 @@
     <table class="header-table">
         <tr>
             <td style="width: 65%; vertical-align: top;">
-                <div class="company-title">{{ $company->company_name ?? 'LAXMI TRADERS' }}</div>
+                <div class="company-title">{{ $company->company_name }}</div>
                 <div class="company-subtitle">
-                    {{ $company->address ?? 'No 54 – PALLAVARAYAN PALAYAM, VEERANAMPALAYAM, P.O., KANGEYAM' }}, {{ $company->city ?? 'KANGEYAM' }} - {{ $company->pincode ?? '620010' }}, {{ $company->state ?? 'Tamil Nadu' }}<br>
-                    <strong>GSTIN:</strong> {{ $company->gstin ?? '33BWLPK6363A3ZN' }} | <strong>PAN:</strong> {{ $company->pan ?? 'BWLPK6363A' }}<br>
-                    <strong>Phone:</strong> {{ $company->phone ?? '+91 98765 43210' }} | <strong>Email:</strong> {{ $company->email ?? 'accounts@laxmitraders.com' }}
+                    {{ collect([$company->address, $company->city, $company->pincode, $company->state])->filter()->implode(', ') }}<br>
+                    <strong>GSTIN:</strong> {{ $company->gstin ?: '-' }} | <strong>PAN:</strong> {{ $company->pan ?: '-' }}<br>
+                    <strong>Phone:</strong> {{ $company->phone ?: '-' }} | <strong>Email:</strong> {{ $company->email ?: '-' }}
                 </div>
             </td>
             <td style="width: 35%; text-align: right; vertical-align: top;">
@@ -117,7 +117,7 @@
                 <div style="font-size: 10.5px; margin-top: 6px; color: #4b5563;">
                     <strong>Note No:</strong> <span style="font-size: 12px; color: #111827; font-weight: bold;">{{ $debitNote->debit_note_number }}</span><br>
                     <strong>Date:</strong> {{ date('d-M-Y', strtotime($debitNote->date)) }}<br>
-                    <strong>Branch:</strong> {{ $debitNote->branch->branch_name ?? 'Head Office' }}
+                    <strong>Branch:</strong> {{ $debitNote->branch->branch_name ?? '-' }}
                 </div>
             </td>
         </tr>
@@ -221,7 +221,7 @@
             </td>
             <td style="width: 50%; text-align: right; vertical-align: bottom;">
                 <div style="font-weight: bold; font-size: 10px; margin-bottom: 40px;">
-                    For {{ $company->company_name ?? 'LAXMI TRADERS' }}
+                    For {{ $company->company_name }}
                 </div>
                 <div class="sign-box" style="margin-left: auto;">
                     {{ $company->authorized_signatory_title ?? 'Authorised Signatory' }}

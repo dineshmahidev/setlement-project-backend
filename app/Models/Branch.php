@@ -10,6 +10,7 @@ class Branch extends Model
     use HasFactory;
 
     protected $fillable = [
+        'company_id',
         'branch_code',
         'branch_name',
         'address',
@@ -33,6 +34,11 @@ class Branch extends Model
     public function getCodeAttribute(): string
     {
         return $this->attributes['branch_code'] ?? '';
+    }
+
+    public function company()
+    {
+        return $this->belongsTo(Company::class);
     }
 
     public function users()

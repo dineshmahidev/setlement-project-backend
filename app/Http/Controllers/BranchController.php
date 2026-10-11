@@ -11,7 +11,8 @@ class BranchController extends Controller
 {
     public function index(Request $request)
     {
-        $query = Branch::query();
+        $query = $this->scopeCompany(Branch::query());
+        $query = $this->scopeBranches($query, 'id');
 
         if ($request->filled('search')) {
             $search = $request->search;
@@ -44,7 +45,10 @@ class BranchController extends Controller
 
     public function store(BranchRequest $request)
     {
-        $branch = Branch::create($request->validated());
+        $data = $request->validated();
+        $data['company_id'] = $this->activeCompanyId();
+
+        $branch = Branch::create($data);
 
         AuditLog::logAction('created', 'Branch', $branch->id, $branch->branch_code, null, $branch->toArray(), 'Branch created');
 
@@ -57,6 +61,9 @@ class BranchController extends Controller
 
     public function show(Branch $branch)
     {
+        $this->guardCompanyOwnership($branch);
+        $this->guardBranchOwnership((object) ['branch_id' => $branch->id]);
+
         $branch->loadCount(['settlements', 'invoices', 'debitNotes']);
 
         return response()->json([
@@ -67,6 +74,7 @@ class BranchController extends Controller
 
     public function update(BranchRequest $request, Branch $branch)
     {
+        $this->guardCompanyOwnership($branch);
         $oldValues = $branch->toArray();
         $branch->update($request->validated());
 
@@ -81,6 +89,8 @@ class BranchController extends Controller
 
     public function destroy(Branch $branch)
     {
+        $this->guardCompanyOwnership($branch);
+
         if ($branch->settlements()->exists() || $branch->invoices()->exists() || $branch->debitNotes()->exists()) {
             return response()->json([
                 'success' => false,

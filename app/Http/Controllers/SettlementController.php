@@ -44,7 +44,8 @@ class SettlementController extends Controller
 
     public function index(Request $request)
     {
-        $query = Settlement::with(['branch', 'vendor', 'product', 'invoice', 'creator']);
+        // Settlements are isolated through their branch (which belongs to a company)
+        $query = $this->scopeBranches(Settlement::with(['branch', 'vendor', 'product', 'invoice', 'creator']));
 
         if ($request->filled('branch_id')) {
             $query->where('branch_id', $request->branch_id);
@@ -90,6 +91,8 @@ class SettlementController extends Controller
     public function store(SettlementRequest $request)
     {
         $validated = $request->validated();
+
+        $this->guardBranchAccess($validated['branch_id'] ?? null);
 
         $settlement = DB::transaction(function () use ($validated, $request) {
             // 1. Recalculate everything on backend via Service class
@@ -270,6 +273,8 @@ class SettlementController extends Controller
 
     public function show(Settlement $settlement)
     {
+        $this->guardBranchOwnership($settlement);
+
         $settlement->load(['branch', 'vendor', 'product', 'invoice', 'debitNotes.items', 'qualityTests', 'charges', 'creator']);
 
         return response()->json([
@@ -280,6 +285,8 @@ class SettlementController extends Controller
 
     public function update(SettlementRequest $request, Settlement $settlement)
     {
+        $this->guardBranchOwnership($settlement);
+
         if ($settlement->status === 'cancelled') {
             return response()->json([
                 'success' => false,
@@ -359,6 +366,8 @@ class SettlementController extends Controller
 
     public function cancel(Request $request, Settlement $settlement)
     {
+        $this->guardBranchOwnership($settlement);
+
         $request->validate([
             'cancellation_reason' => 'required|string|min:5',
         ]);
@@ -410,6 +419,8 @@ class SettlementController extends Controller
 
     public function pdf(Settlement $settlement)
     {
+        $this->guardBranchOwnership($settlement);
+
         $pdf = $this->pdfService->generateSettlementBillPdf($settlement);
         $fileName = str_replace(['/', '\\'], '-', $settlement->settlement_number) . '.pdf';
 

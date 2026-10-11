@@ -11,7 +11,7 @@ class ProductController extends Controller
 {
     public function index(Request $request)
     {
-        $query = Product::query();
+        $query = $this->scopeCompany(Product::query());
 
         if ($request->filled('search')) {
             $search = $request->search;
@@ -43,7 +43,10 @@ class ProductController extends Controller
 
     public function store(ProductRequest $request)
     {
-        $product = Product::create($request->validated());
+        $data = $request->validated();
+        $data['company_id'] = $this->activeCompanyId();
+
+        $product = Product::create($data);
 
         AuditLog::logAction('created', 'Product', $product->id, $product->product_code, null, $product->toArray(), 'Product created');
 
@@ -56,6 +59,8 @@ class ProductController extends Controller
 
     public function show(Product $product)
     {
+        $this->guardCompanyOwnership($product);
+
         return response()->json([
             'success' => true,
             'data' => $product,
@@ -64,6 +69,7 @@ class ProductController extends Controller
 
     public function update(ProductRequest $request, Product $product)
     {
+        $this->guardCompanyOwnership($product);
         $old = $product->toArray();
         $product->update($request->validated());
 
@@ -78,6 +84,8 @@ class ProductController extends Controller
 
     public function destroy(Product $product)
     {
+        $this->guardCompanyOwnership($product);
+
         if ($product->settlements()->exists() || $product->invoices()->exists()) {
             return response()->json([
                 'success' => false,

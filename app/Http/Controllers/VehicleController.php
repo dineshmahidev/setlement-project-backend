@@ -12,7 +12,7 @@ class VehicleController extends Controller
 
     public function index(Request $request)
     {
-        $query = Vehicle::with('branch')->orderBy('number');
+        $query = $this->scopeCompany(Vehicle::query())->with('branch')->orderBy('number');
         if ($request->filled('search')) {
             $s = $request->search;
             $query->where(fn ($q) => $q->where('number', 'like', "%$s%")->orWhere('driver_name', 'like', "%$s%"));
@@ -32,6 +32,7 @@ class VehicleController extends Controller
     public function store(Request $request)
     {
         $data = $this->validated($request);
+        $data['company_id'] = $this->activeCompanyId();
         $vehicle = Vehicle::create($data);
         $this->audit->log('CREATE', 'Vehicle', $vehicle->id, null, $vehicle->toArray());
         return response()->json($vehicle, 201);
@@ -39,11 +40,15 @@ class VehicleController extends Controller
 
     public function show(Vehicle $vehicle)
     {
+        $this->guardCompanyOwnership($vehicle);
+
         return response()->json($vehicle->load('branch'));
     }
 
     public function update(Request $request, Vehicle $vehicle)
     {
+        $this->guardCompanyOwnership($vehicle);
+
         $data = $this->validated($request, $vehicle);
         $old = $vehicle->toArray();
         $vehicle->update($data);
@@ -53,6 +58,8 @@ class VehicleController extends Controller
 
     public function destroy(Vehicle $vehicle)
     {
+        $this->guardCompanyOwnership($vehicle);
+
         $this->audit->log('ARCHIVE', 'Vehicle', $vehicle->id, $vehicle->toArray(), ['status' => 'INACTIVE']);
         $vehicle->update(['status' => 'INACTIVE']);
         return response()->json(['message' => 'Vehicle archived']);

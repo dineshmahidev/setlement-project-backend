@@ -10,6 +10,7 @@ class Vendor extends Model
     use HasFactory;
 
     protected $fillable = [
+        'company_id',
         'vendor_code',
         'vendor_name',
         'business_name',
@@ -27,6 +28,7 @@ class Vendor extends Model
         'account_number',
         'ifsc',
         'opening_balance',
+        'party_type',
         'status',
     ];
 

@@ -3,7 +3,6 @@
 namespace App\Http\Controllers;
 
 use App\Models\Branch;
-use App\Models\CompanySetting;
 use App\Models\DebitNote;
 use App\Models\Invoice;
 use App\Models\Product;
@@ -49,18 +48,132 @@ class ReportController extends Controller
         $vendorId = $request->get('vendor_id');
         $productId = $request->get('product_id');
 
+        // Reports are isolated to the branches the requester may see
+        $allowed = $this->allowedBranchIds();
+        if ($allowed !== null) {
+            if ($branchId) {
+                $matched = array_values(array_intersect(
+                    array_map('intval', (array) $branchId),
+                    array_map('intval', $allowed)
+                ));
+                $branchId = $matched ?: $allowed;
+            } else {
+                $branchId = $allowed;
+            }
+        }
+
         return match ($type) {
             'settlements' => $this->getSettlementReport($fromDate, $toDate, $branchId, $vendorId, $productId),
             'debit_notes' => $this->getDebitNoteReport($fromDate, $toDate, $branchId, $vendorId),
             'invoices' => $this->getInvoiceReport($fromDate, $toDate, $branchId, $vendorId),
-            'branch_wise' => $this->getBranchWiseReport($fromDate, $toDate),
-            'product_wise' => $this->getProductWiseReport($fromDate, $toDate),
+            'branch_wise' => $this->getBranchWiseReport($fromDate, $toDate, $branchId),
+            'product_wise' => $this->getProductWiseReport($fromDate, $toDate, $branchId),
             'gst' => $this->getGstReport($fromDate, $toDate, $branchId),
             'rebate' => $this->getRebateReport($fromDate, $toDate, $branchId, $vendorId),
             'outstanding' => $this->getOutstandingReport($branchId),
-            'payments' => $this->getPaymentReport($fromDate, $toDate, $vendorId),
+            'payments' => $this->getPaymentReport($fromDate, $toDate, $vendorId, $branchId),
+            'stock' => $this->getStockReport($branchId, $request->get('item_id')),
+            'lots' => $this->getLotReport($branchId, $request->get('item_id')),
+            'inward' => $this->getInwardReport($fromDate, $toDate, $branchId),
+            'outward' => $this->getOutwardReport($fromDate, $toDate, $branchId),
+            'valuation' => $this->getValuationReport($branchId),
+            'production' => $this->getProductionReport($fromDate, $toDate, $branchId),
             default => [],
         };
+    }
+
+    /** ================= INVENTORY REPORTS ================= */
+    protected function companyId(): ?int
+    {
+        return $this->activeCompanyId();
+    }
+
+    protected function getStockReport($branchId, $itemId = null)
+    {
+        $q = \App\Models\Lot::with(['item:id,code,name,material_type', 'grade:id,code,name', 'branch:id,branch_name,branch_code'])
+            ->where('status', 'OPEN')->where('available_qty', '>', 0)
+            ->where('company_id', $this->companyId());
+        if ($branchId) $q->whereIn('branch_id', (array) $branchId);
+        if ($itemId) $q->where('item_id', $itemId);
+        $lots = $q->orderBy('branch_id')->orderBy('item_id')->get();
+
+        return $lots->map(fn ($l) => [
+            'godown' => $l->branch?->branch_name, 'item_code' => $l->item?->code, 'item_name' => $l->item?->name,
+            'material_type' => $l->item?->material_type, 'lot_number' => $l->lot_number, 'oil_pct' => $l->oil_pct,
+            'grade' => $l->grade?->name, 'available_qty' => (float) $l->available_qty, 'stock_value' => (float) $l->stock_value,
+        ])->values();
+    }
+
+    protected function getLotReport($branchId, $itemId = null)
+    {
+        $q = \App\Models\Lot::with(['item:id,code,name', 'grade:id,code,name', 'branch:id,branch_name'])
+            ->where('company_id', $this->companyId());
+        if ($branchId) $q->whereIn('branch_id', (array) $branchId);
+        if ($itemId) $q->where('item_id', $itemId);
+        return $q->orderBy('id')->get()->map(fn ($l) => [
+            'godown' => $l->branch?->branch_name, 'item' => $l->item?->name, 'lot_number' => $l->lot_number,
+            'oil_pct' => $l->oil_pct, 'grade' => $l->grade?->name, 'opening_qty' => (float) $l->opening_qty,
+            'received_qty' => (float) $l->received_qty, 'issued_qty' => (float) $l->issued_qty,
+            'available_qty' => (float) $l->available_qty, 'stock_value' => (float) $l->stock_value, 'status' => $l->status,
+        ])->values();
+    }
+
+    protected function getInwardReport($from, $to, $branchId)
+    {
+        $q = \App\Models\InwardEntry::with(['party:id,vendor_name', 'branch:id,branch_name', 'items.item:id,name,code'])
+            ->whereBetween('date', [$from, $to])->where('company_id', $this->companyId());
+        if ($branchId) $q->whereIn('branch_id', (array) $branchId);
+        return $q->orderBy('date')->get()->map(fn ($e) => [
+            'entry_number' => $e->entry_number, 'date' => $e->date, 'godown' => $e->branch?->branch_name,
+            'party' => $e->party?->vendor_name, 'items_count' => $e->items->count(),
+            'total_qty' => (float) $e->items->sum('quantity'), 'total_amount' => (float) $e->total_amount, 'status' => $e->status,
+        ])->values();
+    }
+
+    protected function getOutwardReport($from, $to, $branchId)
+    {
+        $q = \App\Models\OutwardEntry::with(['party:id,vendor_name', 'branch:id,branch_name', 'items.item:id,name,code'])
+            ->whereBetween('date', [$from, $to])->where('company_id', $this->companyId());
+        if ($branchId) $q->whereIn('branch_id', (array) $branchId);
+        return $q->orderBy('date')->get()->map(fn ($e) => [
+            'entry_number' => $e->entry_number, 'date' => $e->date, 'godown' => $e->branch?->branch_name,
+            'dispatch_type' => $e->dispatch_type, 'party' => $e->party?->vendor_name, 'destination' => $e->destination,
+            'items_count' => $e->items->count(), 'total_qty' => (float) $e->items->sum('quantity'),
+            'total_amount' => (float) $e->total_amount, 'status' => $e->status,
+        ])->values();
+    }
+
+    protected function getValuationReport($branchId)
+    {
+        $q = \App\Models\Lot::with(['item:id,code,name', 'branch:id,branch_name'])
+            ->where('company_id', $this->companyId())->where('available_qty', '>', 0);
+        if ($branchId) $q->whereIn('branch_id', (array) $branchId);
+        $lots = $q->get();
+
+        $byItem = $lots->groupBy('item_id')->map(function ($g) {
+            $qty = (float) $g->sum('available_qty');
+            $val = (float) $g->sum('stock_value');
+            return [
+                'item_code' => $g->first()->item?->code, 'item_name' => $g->first()->item?->name,
+                'available_qty' => round($qty, 3), 'stock_value' => round($val, 2),
+                'avg_oil_pct' => $qty > 0 ? round((float) $g->sum(fn ($l) => (float) $l->oil_pct * (float) $l->available_qty) / $qty, 2) : null,
+            ];
+        })->values();
+
+        // Flat array so the generic report table renders it directly.
+        return $byItem;
+    }
+
+    protected function getProductionReport($from, $to, $branchId)
+    {
+        $q = \App\Models\ProductionBatch::with(['outputItem:id,name,code', 'sourceBranch:id,branch_name', 'inputs', 'outputs'])
+            ->whereBetween('date', [$from, $to])->where('company_id', $this->companyId());
+        if ($branchId) $q->whereIn('source_branch_id', (array) $branchId);
+        return $q->orderBy('date')->get()->map(fn ($b) => [
+            'batch_number' => $b->batch_number, 'date' => $b->date, 'godown' => $b->sourceBranch?->branch_name,
+            'output_item' => $b->outputItem?->name, 'input_total' => round((float) $b->inputs->sum('quantity'), 3),
+            'output_total' => round((float) $b->outputs->sum('quantity'), 3), 'wastage' => round((float) $b->wastage, 3), 'status' => $b->status,
+        ])->values();
     }
 
     protected function getSettlementReport($from, $to, $branchId, $vendorId, $productId)
@@ -68,7 +181,7 @@ class ReportController extends Controller
         $query = Settlement::with(['branch', 'vendor', 'product'])
             ->whereBetween('settlement_date', [$from, $to]);
 
-        if ($branchId) $query->where('branch_id', $branchId);
+        if ($branchId) $query->whereIn('branch_id', (array) $branchId);
         if ($vendorId) $query->where('vendor_id', $vendorId);
         if ($productId) $query->where('product_id', $productId);
 
@@ -80,7 +193,7 @@ class ReportController extends Controller
         $query = DebitNote::with(['branch', 'vendor'])
             ->whereBetween('date', [$from, $to]);
 
-        if ($branchId) $query->where('branch_id', $branchId);
+        if ($branchId) $query->whereIn('branch_id', (array) $branchId);
         if ($vendorId) $query->where('vendor_id', $vendorId);
 
         return $query->orderBy('date', 'desc')->get();
@@ -91,19 +204,21 @@ class ReportController extends Controller
         $query = Invoice::with(['branch', 'vendor', 'product'])
             ->whereBetween('invoice_date', [$from, $to]);
 
-        if ($branchId) $query->where('branch_id', $branchId);
+        if ($branchId) $query->whereIn('branch_id', (array) $branchId);
         if ($vendorId) $query->where('vendor_id', $vendorId);
 
         return $query->orderBy('invoice_date', 'desc')->get();
     }
 
-    protected function getBranchWiseReport($from, $to)
+    protected function getBranchWiseReport($from, $to, $branchId = null)
     {
-        return DB::table('settlements')
+        $query = DB::table('settlements')
             ->join('branches', 'settlements.branch_id', '=', 'branches.id')
             ->whereBetween('settlements.settlement_date', [$from, $to])
-            ->where('settlements.status', '!=', 'cancelled')
-            ->select(
+            ->where('settlements.status', '!=', 'cancelled');
+        if ($branchId) $query->whereIn('settlements.branch_id', (array) $branchId);
+
+        return $query->select(
                 'branches.branch_code',
                 'branches.branch_name',
                 DB::raw('COUNT(settlements.id) as total_settlements'),
@@ -116,13 +231,15 @@ class ReportController extends Controller
             ->get();
     }
 
-    protected function getProductWiseReport($from, $to)
+    protected function getProductWiseReport($from, $to, $branchId = null)
     {
-        return DB::table('settlements')
+        $query = DB::table('settlements')
             ->leftJoin('products', 'settlements.product_id', '=', 'products.id')
             ->whereBetween('settlements.settlement_date', [$from, $to])
-            ->where('settlements.status', '!=', 'cancelled')
-            ->select(
+            ->where('settlements.status', '!=', 'cancelled');
+        if ($branchId) $query->whereIn('settlements.branch_id', (array) $branchId);
+
+        return $query->select(
                 DB::raw('COALESCE(products.product_name, "Rice Bran Grade II") as product_name'),
                 DB::raw('COALESCE(products.product_code, "RB-02") as product_code'),
                 DB::raw('COUNT(settlements.id) as total_settlements'),
@@ -142,7 +259,7 @@ class ReportController extends Controller
         $settlementsQuery = DB::table('settlements')
             ->whereBetween('settlement_date', [$from, $to])
             ->where('status', '!=', 'cancelled');
-        if ($branchId) $settlementsQuery->where('branch_id', $branchId);
+        if ($branchId) $settlementsQuery->whereIn('branch_id', (array) $branchId);
 
         $settlementGst = $settlementsQuery->select(
             DB::raw('"Settlement Bills" as document_type'),
@@ -156,7 +273,7 @@ class ReportController extends Controller
         $debitNotesQuery = DB::table('debit_notes')
             ->whereBetween('date', [$from, $to])
             ->where('status', '!=', 'cancelled');
-        if ($branchId) $debitNotesQuery->where('branch_id', $branchId);
+        if ($branchId) $debitNotesQuery->whereIn('branch_id', (array) $branchId);
 
         $debitNoteGst = $debitNotesQuery->select(
             DB::raw('"Debit Notes (Rebates)" as document_type'),
@@ -180,7 +297,7 @@ class ReportController extends Controller
             ->where('status', '!=', 'cancelled')
             ->whereBetween('settlement_date', [$from, $to]);
 
-        if ($branchId) $query->where('branch_id', $branchId);
+        if ($branchId) $query->whereIn('branch_id', (array) $branchId);
         if ($vendorId) $query->where('vendor_id', $vendorId);
 
         return $query->orderBy('settlement_date', 'desc')->get();
@@ -188,7 +305,7 @@ class ReportController extends Controller
 
     protected function getOutstandingReport($branchId)
     {
-        $query = Vendor::with('ledger')->where('status', 'active');
+        $query = $this->scopeCompany(Vendor::with('ledger'))->where('status', 'active');
         $vendors = $query->get();
 
         $data = [];
@@ -208,13 +325,14 @@ class ReportController extends Controller
         return $data;
     }
 
-    protected function getPaymentReport($from, $to, $vendorId)
+    protected function getPaymentReport($from, $to, $vendorId, $branchId = null)
     {
         $query = VendorLedger::with(['vendor', 'branch'])
             ->whereIn('document_type', ['payment', 'receipt', 'payment_adjustment', 'receipt_adjustment'])
             ->whereBetween('transaction_date', [$from, $to]);
 
         if ($vendorId) $query->where('vendor_id', $vendorId);
+        if ($branchId) $query->whereIn('branch_id', (array) $branchId);
 
         return $query->orderBy('transaction_date', 'desc')->get();
     }
@@ -272,10 +390,7 @@ class ReportController extends Controller
 
     protected function exportPdf(string $type, $data, Request $request)
     {
-        $company = CompanySetting::first() ?? new CompanySetting([
-            'company_name' => 'LAXMI TRADERS',
-            'gstin' => '33BWLPK6363A3ZN',
-        ]);
+        $company = app(\App\Services\PdfService::class)->resolveCompany(request('active_company_id'));
 
         $title = ucwords(str_replace('_', ' ', $type)) . ' Report';
         $html = "<html><head><style>body{font-family:sans-serif;font-size:10px;} table{width:100%;border-collapse:collapse;margin-top:10px;} th,td{border:1px solid #ccc;padding:4px;} th{background:#eee;}</style></head><body>";
@@ -286,13 +401,13 @@ class ReportController extends Controller
         if ($type === 'settlements') {
             $html .= "<thead><tr><th>No</th><th>Date</th><th>Vendor</th><th>Weight (MT)</th><th>Oil %</th><th>Bran Value</th><th>Net Payable</th></tr></thead><tbody>";
             foreach ($data as $r) {
-                $html .= "<tr><td>{$r->settlement_number}</td><td>{$r->settlement_date}</td><td>{$r->vendor->vendor_name}</td><td>{$r->final_weight_mt}</td><td>{$r->oil_content}%</td><td>₹{$r->bran_value}</td><td>₹{$r->net_payable}</td></tr>";
+                $html .= "<tr><td>{$r->settlement_number}</td><td>{$r->settlement_date}</td><td>{$r->vendor->vendor_name}</td><td>{$r->final_weight_mt}</td><td>{$r->oil_content}%</td><td>â‚¹{$r->bran_value}</td><td>â‚¹{$r->net_payable}</td></tr>";
             }
             $html .= "</tbody>";
         } elseif ($type === 'outstanding') {
-            $html .= "<thead><tr><th>Code</th><th>Vendor Name</th><th>GSTIN</th><th>Balance (₹)</th><th>Nature</th></tr></thead><tbody>";
+            $html .= "<thead><tr><th>Code</th><th>Vendor Name</th><th>GSTIN</th><th>Balance (â‚¹)</th><th>Nature</th></tr></thead><tbody>";
             foreach ($data as $r) {
-                $html .= "<tr><td>{$r['vendor_code']}</td><td>{$r['vendor_name']}</td><td>{$r['gstin']}</td><td>₹{$r['balance']}</td><td>{$r['nature']}</td></tr>";
+                $html .= "<tr><td>{$r['vendor_code']}</td><td>{$r['vendor_name']}</td><td>{$r['gstin']}</td><td>â‚¹{$r['balance']}</td><td>{$r['nature']}</td></tr>";
             }
             $html .= "</tbody>";
         } else {

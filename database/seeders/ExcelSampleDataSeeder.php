@@ -26,6 +26,7 @@ class ExcelSampleDataSeeder extends Seeder
         $branch = Branch::updateOrCreate(
             ['branch_code' => 'LT-TRY'],
             [
+                'company_id' => \App\Models\Company::where('code', 'laxmi')->value('id'),
                 'branch_name' => 'LAXMI TRADERS -TRICHY',
                 'address' => 'No 54-PALLAVARAYAN PALAYAM, VEERANAMPALAYAM, PO., KANGEYAM',
                 'city' => 'TRICHY',

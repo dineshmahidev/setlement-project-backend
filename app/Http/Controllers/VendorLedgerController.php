@@ -4,7 +4,6 @@ namespace App\Http\Controllers;
 
 use App\Models\AuditLog;
 use App\Models\Branch;
-use App\Models\CompanySetting;
 use App\Models\Vendor;
 use App\Models\VendorLedger;
 use Barryvdh\DomPDF\Facade\Pdf;
@@ -19,8 +18,11 @@ class VendorLedgerController extends Controller
         ]);
 
         $vendor = Vendor::findOrFail($request->vendor_id);
+        $this->guardCompanyOwnership($vendor);
+
         $query = VendorLedger::with(['branch', 'creator'])
             ->where('vendor_id', $vendor->id);
+        $this->scopeBranches($query);
 
         if ($request->filled('branch_id')) {
             $query->where('branch_id', $request->branch_id);
@@ -66,6 +68,10 @@ class VendorLedgerController extends Controller
             'document_number' => 'nullable|string|max:50',
         ]);
 
+        $vendor = Vendor::findOrFail($request->vendor_id);
+        $this->guardCompanyOwnership($vendor);
+        $this->guardBranchAccess($request->branch_id);
+
         $isDebit = $request->transaction_type === 'debit';
         $entry = VendorLedger::postTransaction([
             'vendor_id' => $request->vendor_id,
@@ -94,17 +100,17 @@ class VendorLedgerController extends Controller
         ]);
 
         $vendor = Vendor::findOrFail($request->vendor_id);
+        $this->guardCompanyOwnership($vendor);
+
         $query = VendorLedger::with(['branch'])->where('vendor_id', $vendor->id);
+        $this->scopeBranches($query);
 
         if ($request->filled('from_date') && $request->filled('to_date')) {
             $query->whereBetween('transaction_date', [$request->from_date, $request->to_date]);
         }
 
         $entries = $query->orderBy('transaction_date', 'asc')->orderBy('id', 'asc')->get();
-        $company = CompanySetting::first() ?? new CompanySetting([
-            'company_name' => 'LAXMI TRADERS',
-            'gstin' => '33BWLPK6363A3ZN',
-        ]);
+        $company = app(\App\Services\PdfService::class)->resolveCompany($vendor->branch_id ?? null);
 
         $pdf = Pdf::loadHTML($this->renderLedgerHtml($vendor, $entries, $company, $request->from_date, $request->to_date))
             ->setPaper('a4', 'portrait');

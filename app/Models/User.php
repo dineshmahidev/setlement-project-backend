@@ -56,6 +56,11 @@ class User extends Authenticatable
             ->withPivot('granted');
     }
 
+    public function companies()
+    {
+        return $this->belongsToMany(Company::class, 'user_companies');
+    }
+
     public function hasRole(string|array $roles): bool
     {
         if (!$this->role) {
@@ -93,17 +98,80 @@ class User extends Authenticatable
         return false;
     }
 
-    public function allowedBranchIds(): ?array
+    public function isSuperAdmin(): bool
     {
-        if ($this->hasRole(['super_admin', 'superadmin', 'Super Admin', 'SUPER ADMIN'])) {
+        return $this->hasRole(['super_admin', 'superadmin', 'Super Admin', 'SUPER ADMIN']);
+    }
+
+    public function canPermission(string $permission): bool
+    {
+        return $this->hasPermission($permission);
+    }
+
+    /**
+     * null  => unrestricted (super admin, no company selected)
+     * array => explicitly allowed company ids
+     */
+    public function allowedCompanyIds(): ?array
+    {
+        if ($this->isSuperAdmin()) {
             return null;
         }
 
-        $ids = $this->branches()->pluck('branches.id')->toArray();
-        if (empty($ids) && $this->default_branch_id) {
-            $ids = [$this->default_branch_id];
+        $ids = $this->companies()->pluck('companies.id')->unique()->values()->all();
+
+        if (empty($ids)) {
+            $ids = $this->branches()->pluck('branches.company_id')
+                ->filter()
+                ->unique()
+                ->values()
+                ->all();
         }
 
-        return !empty($ids) ? $ids : null;
+        if (empty($ids) && $this->defaultBranch?->company_id) {
+            $ids = [$this->defaultBranch->company_id];
+        }
+
+        return ! empty($ids) ? $ids : null;
+    }
+
+    /**
+     * Concrete list of company ids this user may ever see.
+     */
+    public function companyIds(): array
+    {
+        return $this->allowedCompanyIds() ?? Company::query()->pluck('id')->all();
+    }
+
+    /**
+     * null  => unrestricted (super admin with no company filter)
+     * array => branch ids allowed inside the given company
+     */
+    public function allowedBranchIds(?int $companyId = null): ?array
+    {
+        if ($this->isSuperAdmin()) {
+            if ($companyId) {
+                return Branch::query()->where('company_id', $companyId)->pluck('id')->all();
+            }
+
+            return null;
+        }
+
+        $query = $this->branches();
+
+        if ($companyId) {
+            $query->where('branches.company_id', $companyId);
+        }
+
+        $ids = $query->pluck('branches.id')->unique()->values()->all();
+
+        if (empty($ids) && $this->default_branch_id) {
+            $default = $this->defaultBranch;
+            if (! $companyId || ($default && (int) $default->company_id === $companyId)) {
+                $ids = [$this->default_branch_id];
+            }
+        }
+
+        return $ids;
     }
 }
