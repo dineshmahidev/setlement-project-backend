@@ -30,6 +30,10 @@ class CompanySeeder extends Seeder
             'email' => 'laxmitraders@example.com',
             'settlement_prefix' => 'LT',
             'sort_order' => 1,
+            'logo_path' => '/logos/laxmi_traders.png',
+            'logo_transparent_path' => '/logos/laxmi_traders_transparent.png',
+            'banner_path' => '/banners/laxmi_traders_banner.png',
+            'signature_path' => '/signatures/laxmi_signature.png',
             'branches' => [
                 ['BR-LT01', 'LAXMI TRADERS (Ariyamangalam)'],
                 ['BR-LT02', 'LAXMI TRADERS (Trichy Bazaar)'],
@@ -53,6 +57,10 @@ class CompanySeeder extends Seeder
             'email' => 'smtraders@example.com',
             'settlement_prefix' => 'SM',
             'sort_order' => 2,
+            'logo_path' => '/logos/sm_traders.png',
+            'logo_transparent_path' => '/logos/sm_traders_transparent.png',
+            'banner_path' => '/banners/sm_traders_banner.png',
+            'signature_path' => '/signatures/sm_signature.png',
             'branches' => [
                 ['BR-SM01', 'S M TRADERS (Ariyamangalam)'],
             ],
@@ -75,6 +83,10 @@ class CompanySeeder extends Seeder
             'email' => 'shrieefeeds@example.com',
             'settlement_prefix' => 'SF',
             'sort_order' => 3,
+            'logo_path' => '/logos/shree_feeds.png',
+            'logo_transparent_path' => '/logos/shree_feeds_transparent.png',
+            'banner_path' => '/banners/shree_feeds_banner.png',
+            'signature_path' => '/signatures/shriee_signature.png',
             'branches' => [
                 ['BR-SF01', 'SHRIEE FEEDS (Manapparai)'],
             ],
