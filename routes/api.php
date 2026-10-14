@@ -17,6 +17,7 @@ use App\Http\Controllers\MaterialController;
 use App\Http\Controllers\OutwardController;
 use App\Http\Controllers\ProductionController;
 use App\Http\Controllers\ProductController;
+use App\Http\Controllers\EnquiryController;
 use App\Http\Controllers\ReportController;
 use App\Http\Controllers\RoleController;
 use App\Http\Controllers\SettingController;
@@ -31,6 +32,8 @@ use Illuminate\Support\Facades\Route;
 // Public routes
 Route::post('/login', [AuthController::class, 'login']);
 Route::get('/public/cms/{slug?}', [CompanyController::class, 'publicCms']);
+Route::post('/public/enquiries', [EnquiryController::class, 'publicStore']);
+Route::post('/public/track-visit', [EnquiryController::class, 'publicTrackVisit']);
 
 // Authenticated routes
 Route::middleware(['auth:sanctum', 'company.scope'])->group(function () {
@@ -39,6 +42,13 @@ Route::middleware(['auth:sanctum', 'company.scope'])->group(function () {
 
     // Dashboard
     Route::get('/dashboard', [DashboardController::class, 'index']);
+
+    // Leads & Traffic Analytics
+    Route::get('/enquiries', [EnquiryController::class, 'index']);
+    Route::get('/enquiries/{enquiry}', [EnquiryController::class, 'show']);
+    Route::patch('/enquiries/{enquiry}', [EnquiryController::class, 'update']);
+    Route::delete('/enquiries/{enquiry}', [EnquiryController::class, 'destroy']);
+    Route::get('/traffic-stats', [EnquiryController::class, 'getTrafficStats']);
 
     // Companies (multi-company switcher + admin CRUD)
     Route::get('/companies', [CompanyController::class, 'index']);
