@@ -4,9 +4,11 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Item extends Model
 {
+    use SoftDeletes;
     protected $fillable = [
         'company_id', 'code', 'name', 'material_type', 'default_oil_pct', 'description',
         'category_id', 'unit_id', 'min_stock_level', 'max_stock_level', 'status',

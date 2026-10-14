@@ -30,7 +30,7 @@ class ItemController extends Controller
     {
         $companyId = $this->activeCompanyId();
         $data = $request->validate([
-            'code' => ['required', 'string', 'max:30', 'unique:items,code,NULL,id,company_id,'.($companyId ?? 'NULL')],
+            'code' => ['nullable', 'string', 'max:30', 'unique:items,code,NULL,id,company_id,'.($companyId ?? 'NULL')],
             'name' => ['required', 'string', 'max:200'],
             'material_type' => ['nullable', 'string', 'max:30'],
             'default_oil_pct' => ['nullable', 'numeric', 'min:0', 'max:100'],
@@ -41,6 +41,18 @@ class ItemController extends Controller
             'max_stock_level' => ['nullable', 'numeric', 'min:0'],
             'status' => ['nullable', 'in:ACTIVE,INACTIVE'],
         ]);
+
+        if (empty($data['code'])) {
+            $prefix = strtoupper(substr(preg_replace('/[^A-Za-z0-9]/', '', $data['name'] ?? 'ITM'), 0, 4));
+            if (strlen($prefix) < 2) {
+                $prefix = 'ITM';
+            }
+            $codeCandidate = $prefix . '-' . str_pad((string) rand(100, 999), 3, '0', STR_PAD_LEFT);
+            while (Item::where('company_id', $companyId)->where('code', $codeCandidate)->exists()) {
+                $codeCandidate = $prefix . '-' . rand(1000, 9999);
+            }
+            $data['code'] = $codeCandidate;
+        }
 
         $item = Item::create($data + ['company_id' => $companyId]);
         $this->audit->log('CREATE', 'Item', $item->id, null, $item->toArray());
@@ -59,7 +71,7 @@ class ItemController extends Controller
         $this->guardCompanyOwnership($item);
 
         $data = $request->validate([
-            'code' => ['sometimes', 'string', 'max:30', 'unique:items,code,'.$item->id.',id,company_id,'.($item->company_id ?? 'NULL')],
+            'code' => ['nullable', 'string', 'max:30', 'unique:items,code,'.$item->id.',id,company_id,'.($item->company_id ?? 'NULL')],
             'name' => ['sometimes', 'string', 'max:200'],
             'material_type' => ['nullable', 'string', 'max:30'],
             'default_oil_pct' => ['nullable', 'numeric', 'min:0', 'max:100'],
@@ -70,6 +82,10 @@ class ItemController extends Controller
             'max_stock_level' => ['nullable', 'numeric', 'min:0'],
             'status' => ['nullable', 'in:ACTIVE,INACTIVE'],
         ]);
+
+        if (array_key_exists('code', $data) && empty($data['code'])) {
+            unset($data['code']);
+        }
 
         $old = $item->toArray();
         $item->update($data);

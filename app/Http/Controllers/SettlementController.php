@@ -45,7 +45,7 @@ class SettlementController extends Controller
     public function index(Request $request)
     {
         // Settlements are isolated through their branch (which belongs to a company)
-        $query = $this->scopeBranches(Settlement::with(['branch', 'vendor', 'product', 'invoice', 'creator']));
+        $query = $this->scopeBranches(Settlement::with(['branch.company', 'vendor', 'product', 'invoice', 'creator']));
 
         if ($request->filled('branch_id')) {
             $query->where('branch_id', $request->branch_id);
@@ -267,7 +267,7 @@ class SettlementController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Settlement created successfully',
-            'data' => $settlement->load(['branch', 'vendor', 'product', 'invoice', 'debitNotes', 'qualityTests', 'charges']),
+            'data' => $settlement->load(['branch.company', 'vendor', 'product', 'invoice', 'debitNotes', 'qualityTests', 'charges']),
         ], 201);
     }
 
@@ -275,7 +275,7 @@ class SettlementController extends Controller
     {
         $this->guardBranchOwnership($settlement);
 
-        $settlement->load(['branch', 'vendor', 'product', 'invoice', 'debitNotes.items', 'qualityTests', 'charges', 'creator']);
+        $settlement->load(['branch.company', 'vendor', 'product', 'invoice', 'debitNotes.items', 'qualityTests', 'charges', 'creator']);
 
         return response()->json([
             'success' => true,
@@ -360,7 +360,7 @@ class SettlementController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Settlement updated successfully',
-            'data' => $settlement->load(['branch', 'vendor', 'product', 'invoice', 'debitNotes', 'qualityTests', 'charges']),
+            'data' => $settlement->load(['branch.company', 'vendor', 'product', 'invoice', 'debitNotes', 'qualityTests', 'charges']),
         ]);
     }
 
@@ -425,5 +425,16 @@ class SettlementController extends Controller
         $fileName = str_replace(['/', '\\'], '-', $settlement->settlement_number) . '.pdf';
 
         return $pdf->stream($fileName);
+    }
+
+    public function destroy(Settlement $settlement)
+    {
+        $this->guardBranchOwnership($settlement);
+        $settlement->delete();
+        AuditLog::logAction('deleted', 'Settlement', $settlement->id, $settlement->settlement_number, null, null, 'Settlement moved to trash');
+        return response()->json([
+            'success' => true,
+            'message' => 'Settlement moved to trash successfully',
+        ]);
     }
 }

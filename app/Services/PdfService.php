@@ -128,4 +128,62 @@ class PdfService
 
         return $pdf;
     }
+
+    public function generateInwardPdf(\App\Models\InwardEntry $inward)
+    {
+        $inward->load(['branch', 'party', 'items.item', 'items.unit', 'items.grade', 'creator', 'confirmer']);
+
+        $company = $this->resolveCompany($inward->branch_id);
+        $company->state_code = $company->state_code ?: substr((string) $company->gstin, 0, 2);
+
+        $pdf = Pdf::loadView('pdf.inward', [
+            'inward' => $inward,
+            'company' => $company,
+        ])->setPaper('a4', 'portrait');
+
+        return $pdf;
+    }
+
+    public function generateOutwardPdf(\App\Models\OutwardEntry $outward)
+    {
+        $outward->load(['branch', 'party', 'items.item', 'items.lot', 'items.unit', 'items.grade', 'creator', 'confirmer']);
+
+        $company = $this->resolveCompany($outward->branch_id);
+        $company->state_code = $company->state_code ?: substr((string) $company->gstin, 0, 2);
+
+        $pdf = Pdf::loadView('pdf.outward', [
+            'outward' => $outward,
+            'company' => $company,
+        ])->setPaper('a4', 'portrait');
+
+        return $pdf;
+    }
+
+    public function generateProductionPdf(\App\Models\ProductionBatch $production)
+    {
+        $production->load([
+            'sourceBranch',
+            'destBranch',
+            'party',
+            'outputItem',
+            'outputGrade',
+            'inputs.lot.item',
+            'inputs.item',
+            'outputs.item',
+            'outputs.lot',
+            'creator',
+            'confirmer',
+        ]);
+
+        $company = $this->resolveCompany($production->dest_branch_id ?: $production->source_branch_id);
+        $company->state_code = $company->state_code ?: substr((string) $company->gstin, 0, 2);
+
+        $pdf = Pdf::loadView('pdf.production', [
+            'production' => $production,
+            'company' => $company,
+        ])->setPaper('a4', 'portrait');
+
+        return $pdf;
+    }
 }
+

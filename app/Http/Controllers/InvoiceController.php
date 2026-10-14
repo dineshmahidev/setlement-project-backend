@@ -225,4 +225,15 @@ class InvoiceController extends Controller
             'data' => $invoice,
         ]);
     }
+
+    public function destroy(Invoice $invoice)
+    {
+        $this->guardBranchOwnership($invoice);
+        $invoice->delete();
+        AuditLog::logAction('deleted', 'Invoice', $invoice->id, $invoice->invoice_number, null, null, 'Invoice moved to trash');
+        return response()->json([
+            'success' => true,
+            'message' => 'Invoice moved to trash successfully',
+        ]);
+    }
 }

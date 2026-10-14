@@ -401,13 +401,13 @@ class ReportController extends Controller
         if ($type === 'settlements') {
             $html .= "<thead><tr><th>No</th><th>Date</th><th>Vendor</th><th>Weight (MT)</th><th>Oil %</th><th>Bran Value</th><th>Net Payable</th></tr></thead><tbody>";
             foreach ($data as $r) {
-                $html .= "<tr><td>{$r->settlement_number}</td><td>{$r->settlement_date}</td><td>{$r->vendor->vendor_name}</td><td>{$r->final_weight_mt}</td><td>{$r->oil_content}%</td><td>â‚¹{$r->bran_value}</td><td>â‚¹{$r->net_payable}</td></tr>";
+                $html .= "<tr><td>{$r->settlement_number}</td><td>{$r->settlement_date}</td><td>{$r->vendor->vendor_name}</td><td>{$r->final_weight_mt}</td><td>{$r->oil_content}%</td><td>₹{$r->bran_value}</td><td>₹{$r->net_payable}</td></tr>";
             }
             $html .= "</tbody>";
         } elseif ($type === 'outstanding') {
-            $html .= "<thead><tr><th>Code</th><th>Vendor Name</th><th>GSTIN</th><th>Balance (â‚¹)</th><th>Nature</th></tr></thead><tbody>";
+            $html .= "<thead><tr><th>Code</th><th>Vendor Name</th><th>GSTIN</th><th>Balance (₹)</th><th>Nature</th></tr></thead><tbody>";
             foreach ($data as $r) {
-                $html .= "<tr><td>{$r['vendor_code']}</td><td>{$r['vendor_name']}</td><td>{$r['gstin']}</td><td>â‚¹{$r['balance']}</td><td>{$r['nature']}</td></tr>";
+                $html .= "<tr><td>{$r['vendor_code']}</td><td>{$r['vendor_name']}</td><td>{$r['gstin']}</td><td>₹{$r['balance']}</td><td>{$r['nature']}</td></tr>";
             }
             $html .= "</tbody>";
         } else {

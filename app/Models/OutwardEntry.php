@@ -3,9 +3,11 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class OutwardEntry extends Model
 {
+    use SoftDeletes;
     protected $fillable = [
         'entry_number', 'company_id', 'branch_id', 'party_id', 'date',
         'dispatch_type', 'vehicle_number', 'driver_name', 'driver_mobile',

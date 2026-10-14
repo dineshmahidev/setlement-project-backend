@@ -11,7 +11,13 @@ class BranchController extends Controller
 {
     public function index(Request $request)
     {
-        $query = $this->scopeCompany(Branch::query());
+        $query = Branch::query()->with('company');
+
+        if ($request->filled('company_id')) {
+            $query->where('company_id', $request->company_id);
+        } else {
+            $query = $this->scopeCompany($query);
+        }
         $query = $this->scopeBranches($query, 'id');
 
         if ($request->filled('search')) {
@@ -91,21 +97,18 @@ class BranchController extends Controller
     {
         $this->guardCompanyOwnership($branch);
 
-        if ($branch->settlements()->exists() || $branch->invoices()->exists() || $branch->debitNotes()->exists()) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Cannot delete branch with associated settlements or financial records. Deactivate it instead.',
-            ], 422);
-        }
-
         $old = $branch->toArray();
+        $name = $branch->branch_name;
+        $code = $branch->branch_code;
+
+        // Automatically cascades and deletes all related records via Branch model deleting hook
         $branch->delete();
 
-        AuditLog::logAction('deleted', 'Branch', $branch->id, $branch->branch_code, $old, null, 'Branch deleted');
+        AuditLog::logAction('deleted', 'Branch', $branch->id, $code, $old, null, "Godown '{$name}' and all associated records permanently deleted");
 
         return response()->json([
             'success' => true,
-            'message' => 'Branch deleted successfully',
+            'message' => "Godown '{$name}' and all associated data deleted successfully",
         ]);
     }
 }

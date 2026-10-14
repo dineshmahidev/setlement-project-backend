@@ -102,15 +102,29 @@
 </head>
 <body>
     <!-- Header -->
+    @php
+        $logoBase64 = $company->logo_base64;
+    @endphp
     <table class="header-table">
         <tr>
             <td style="width: 65%; vertical-align: top;">
-                <div class="company-title">{{ $company->company_name }}</div>
-                <div class="company-subtitle">
-                    {{ collect([$company->address, $company->city, $company->pincode, $company->state])->filter()->implode(', ') }}<br>
-                    <strong>GSTIN:</strong> {{ $company->gstin ?: '-' }} | <strong>PAN:</strong> {{ $company->pan ?: '-' }}<br>
-                    <strong>Phone:</strong> {{ $company->phone ?: '-' }} | <strong>Email:</strong> {{ $company->email ?: '-' }}
-                </div>
+                <table style="width: 100%; border-collapse: collapse;">
+                    <tr>
+                        @if($logoBase64)
+                        <td style="width: 58px; vertical-align: top; padding-right: 10px;">
+                            <img src="{{ $logoBase64 }}" style="max-height: 52px; max-width: 58px; object-fit: contain;" alt="Logo">
+                        </td>
+                        @endif
+                        <td style="vertical-align: top;">
+                            <div class="company-title">{{ $company->company_name }}</div>
+                            <div class="company-subtitle">
+                                {{ collect([$company->address, $company->city, $company->pincode, $company->state])->filter()->implode(', ') }}<br>
+                                <strong>GSTIN:</strong> {{ $company->gstin ?: '-' }} | <strong>PAN:</strong> {{ $company->pan ?: '-' }}<br>
+                                <strong>Phone:</strong> {{ $company->phone ?: '-' }}@if($company->phone_2) / {{ $company->phone_2 }}@endif | <strong>Email:</strong> {{ $company->email ?: '-' }}
+                            </div>
+                        </td>
+                    </tr>
+                </table>
             </td>
             <td style="width: 35%; text-align: right; vertical-align: top;">
                 <div class="doc-badge">{{ strtoupper($debitNote->transaction_type) }} NOTE</div>
@@ -134,7 +148,7 @@
                     {{ $debitNote->vendor->address }}<br>
                     {{ $debitNote->vendor->city }} {{ $debitNote->vendor->pincode ? '- ' . $debitNote->vendor->pincode : '' }}, {{ $debitNote->vendor->state }}<br>
                     <strong>GSTIN:</strong> {{ $debitNote->vendor->gstin ?? 'N/A' }} | <strong>PAN:</strong> {{ $debitNote->vendor->pan ?? 'N/A' }}<br>
-                    <strong>Phone:</strong> {{ $debitNote->vendor->phone ?? 'N/A' }}
+                    <strong>Phone:</strong> {{ $debitNote->vendor->phone ?? 'N/A' }}@if(!empty($debitNote->vendor->phone_2)) / {{ $debitNote->vendor->phone_2 }}@endif
                 </div>
             </td>
             <td style="width: 2%;"></td>
@@ -220,9 +234,16 @@
                 Generated electronically on {{ date('d-M-Y H:i') }}
             </td>
             <td style="width: 50%; text-align: right; vertical-align: bottom;">
-                <div style="font-weight: bold; font-size: 10px; margin-bottom: 40px;">
+                <div style="font-weight: bold; font-size: 10px; margin-bottom: 4px;">
                     For {{ $company->company_name }}
                 </div>
+                @if(!empty($company->signature_base64))
+                    <div style="text-align: right; margin-bottom: 2px;">
+                        <img src="{{ $company->signature_base64 }}" style="max-height: 40px; max-width: 150px; display: inline-block;" alt="Signature">
+                    </div>
+                @else
+                    <div style="height: 32px;"></div>
+                @endif
                 <div class="sign-box" style="margin-left: auto;">
                     {{ $company->authorized_signatory_title ?? 'Authorised Signatory' }}
                 </div>

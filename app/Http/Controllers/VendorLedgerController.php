@@ -105,15 +105,37 @@ class VendorLedgerController extends Controller
         $query = VendorLedger::with(['branch'])->where('vendor_id', $vendor->id);
         $this->scopeBranches($query);
 
+        if ($request->filled('branch_id')) {
+            $query->where('branch_id', $request->branch_id);
+        }
+        if ($request->filled('document_type')) {
+            $query->where('document_type', $request->document_type);
+        }
         if ($request->filled('from_date') && $request->filled('to_date')) {
             $query->whereBetween('transaction_date', [$request->from_date, $request->to_date]);
+        } elseif ($request->filled('from_date')) {
+            $query->where('transaction_date', '>=', $request->from_date);
+        } elseif ($request->filled('to_date')) {
+            $query->where('transaction_date', '<=', $request->to_date);
         }
 
         $entries = $query->orderBy('transaction_date', 'asc')->orderBy('id', 'asc')->get();
         $company = app(\App\Services\PdfService::class)->resolveCompany($vendor->branch_id ?? null);
 
-        $pdf = Pdf::loadHTML($this->renderLedgerHtml($vendor, $entries, $company, $request->from_date, $request->to_date))
-            ->setPaper('a4', 'portrait');
+        $totalDebit = (float) $entries->sum('debit');
+        $totalCredit = (float) $entries->sum('credit');
+        $closingBalance = (float) $vendor->current_balance;
+
+        $pdf = Pdf::loadView('pdf.vendor_ledger', [
+            'vendor' => $vendor,
+            'entries' => $entries,
+            'company' => $company,
+            'fromDate' => $request->from_date,
+            'toDate' => $request->to_date,
+            'totalDebit' => $totalDebit,
+            'totalCredit' => $totalCredit,
+            'closingBalance' => $closingBalance,
+        ])->setPaper('a4', 'portrait');
 
         return $pdf->stream('Vendor_Ledger_' . $vendor->vendor_code . '.pdf');
     }

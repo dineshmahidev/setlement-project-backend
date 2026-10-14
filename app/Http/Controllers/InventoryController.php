@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\InventoryTransaction;
 use App\Services\InventoryLedgerService;
 use App\Services\InventoryService;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
 
 class InventoryController extends Controller
@@ -134,6 +135,76 @@ class InventoryController extends Controller
             'links' => null,
             'meta' => ['total' => $rows->count()],
         ]);
+    }
+
+    public function ledgerPdf(Request $request)
+    {
+        $query = InventoryTransaction::with(['item.unit', 'branch', 'vendor', 'vehicle'])
+            ->orderBy('date')->orderBy('id')
+            ->where('status', 'POSTED');
+
+        $this->scopeBranches($query);
+
+        if ($request->filled('item_id')) $query->where('item_id', $request->item_id);
+        if ($request->filled('branch_id')) $query->where('branch_id', $request->branch_id);
+        if ($request->filled('date_from')) $query->whereDate('date', '>=', $request->date_from);
+        if ($request->filled('date_to')) $query->whereDate('date', '<=', $request->date_to);
+
+        $txs = $query->get();
+
+        $running = [];
+        $rows = $txs->map(function ($tx) use (&$running) {
+            $key = $tx->branch_id.'_'.$tx->item_id;
+            $opening = $running[$key] ?? 0;
+            $closing = $opening + (float) $tx->signed_quantity;
+            $running[$key] = $closing;
+
+            $map = [
+                'STOCK_IN' => ['in' => $tx->quantity, 'out' => 0],
+                'TRANSFER_IN' => ['tin' => $tx->quantity, 'out' => 0],
+                'STOCK_OUT' => ['out' => $tx->quantity],
+                'TRANSFER_OUT' => ['tout' => $tx->quantity],
+                'ADJUSTMENT_IN' => ['adj' => $tx->quantity],
+                'ADJUSTMENT_OUT' => ['adj' => -$tx->quantity],
+                'OPENING' => ['in' => $tx->quantity],
+            ];
+            $cols = $map[$tx->type] ?? [];
+
+            return [
+                'date' => $tx->date->toDateString(),
+                'transaction_number' => $tx->transaction_number,
+                'branch' => $tx->branch?->name,
+                'branch_id' => $tx->branch_id,
+                'item' => $tx->item?->name,
+                'item_id' => $tx->item_id,
+                'unit' => $tx->item?->unit?->code,
+                'type' => $tx->type,
+                'opening_balance' => round($opening, 3),
+                'stock_in' => round((float) ($cols['in'] ?? 0), 3),
+                'stock_out' => round((float) ($cols['out'] ?? 0), 3),
+                'transfer_in' => round((float) ($cols['tin'] ?? 0), 3),
+                'transfer_out' => round((float) ($cols['tout'] ?? 0), 3),
+                'adjustment' => round((float) ($cols['adj'] ?? 0), 3),
+                'closing_balance' => round($closing, 3),
+                'vehicle' => $tx->vehicle?->number,
+                'lot' => $tx->lot_number,
+            ];
+        });
+
+        $company = app(\App\Services\PdfService::class)->resolveCompany($request->branch_id ?? null);
+        $branchName = $request->filled('branch_id') ? \App\Models\Branch::find($request->branch_id)?->branch_name : null;
+        $itemName = $request->filled('item_id') ? \App\Models\Item::find($request->item_id)?->name : null;
+
+        $pdf = Pdf::loadView('pdf.stock_ledger', [
+            'rows' => $rows,
+            'company' => $company,
+            'dateFrom' => $request->date_from,
+            'dateTo' => $request->date_to,
+            'branchName' => $branchName,
+            'itemName' => $itemName,
+        ])->setPaper('a4', 'landscape');
+
+        return $pdf->stream('Stock_Ledger_' . date('Ymd_His') . '.pdf');
     }
 
     public function lowStock(Request $request)
@@ -320,6 +391,12 @@ class InventoryController extends Controller
         if ($vendorId) {
             $settlementsQuery->where('vendor_id', $vendorId);
         }
+        if ($request->filled('date_from')) {
+            $settlementsQuery->whereDate('date', '>=', $request->date_from);
+        }
+        if ($request->filled('date_to')) {
+            $settlementsQuery->whereDate('date', '<=', $request->date_to);
+        }
         $settlements = $settlementsQuery->get();
 
         // 2. Query InventoryTransactions
@@ -331,6 +408,12 @@ class InventoryController extends Controller
         }
         if ($vendorId) {
             $txQuery->where('vendor_id', $vendorId);
+        }
+        if ($request->filled('date_from')) {
+            $txQuery->whereDate('date', '>=', $request->date_from);
+        }
+        if ($request->filled('date_to')) {
+            $txQuery->whereDate('date', '<=', $request->date_to);
         }
         $transactions = $txQuery->get();
 
@@ -559,5 +642,24 @@ class InventoryController extends Controller
             'godowns' => $godownList,
             'recent_movements' => array_slice($recentMovements, 0, 30),
         ]);
+    }
+
+    public function stockPdf(Request $request)
+    {
+        $response = $this->partySummary($request);
+        $data = $response->getData(true);
+
+        $company = app(\App\Services\PdfService::class)->resolveCompany($request->branch_id ?? null);
+
+        $pdf = Pdf::loadView('pdf.stock_summary', [
+            'summary' => $data['summary'] ?? [],
+            'parties' => $data['parties'] ?? [],
+            'godowns' => $data['godowns'] ?? [],
+            'company' => $company,
+            'dateFrom' => $request->date_from,
+            'dateTo' => $request->date_to,
+        ])->setPaper('a4', 'portrait');
+
+        return $pdf->stream('Stock_Summary_' . date('Ymd_His') . '.pdf');
     }
 }

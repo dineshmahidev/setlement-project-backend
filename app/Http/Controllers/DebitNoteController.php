@@ -288,4 +288,15 @@ class DebitNoteController extends Controller
 
         return $pdf->stream($fileName);
     }
+
+    public function destroy(DebitNote $debitNote)
+    {
+        $this->guardBranchOwnership($debitNote);
+        $debitNote->delete();
+        AuditLog::logAction('deleted', 'DebitNote', $debitNote->id, $debitNote->debit_note_number, null, null, 'Debit note moved to trash');
+        return response()->json([
+            'success' => true,
+            'message' => 'Debit note moved to trash successfully',
+        ]);
+    }
 }

@@ -28,10 +28,39 @@ class InventoryLedgerService
     public function nextNumber(string $prefix, string $table = 'inventory_transactions', string $col = 'transaction_number'): string
     {
         $year = date('Y');
-        $like = $prefix.'/'.$year.'/%';
-        $last = DB::table($table)->where($col, 'LIKE', $like)->orderByDesc('id')->value($col);
-        $seq = $last ? ((int) substr($last, strrpos($last, '/') + 1)) + 1 : 1;
-        return sprintf('%s/%s/%05d', $prefix, $year, $seq);
+        $docType = strtolower($prefix);
+
+        return DB::transaction(function () use ($prefix, $table, $col, $year, $docType) {
+            $seq = \App\Models\DocumentSequence::where('document_type', $docType)
+                ->where('financial_year', $year)
+                ->lockForUpdate()
+                ->first();
+
+            if (!$seq) {
+                // Find existing max number in table
+                $like = $prefix.'/'.$year.'/%';
+                $last = DB::table($table)->where($col, 'LIKE', $like)->orderByDesc('id')->value($col);
+                $initial = $last ? ((int) substr($last, strrpos($last, '/') + 1)) : 0;
+                $seq = \App\Models\DocumentSequence::create([
+                    'document_type' => $docType,
+                    'prefix' => $prefix,
+                    'current_number' => $initial,
+                    'financial_year' => $year,
+                ]);
+            }
+
+            $seq->increment('current_number');
+            $num = $seq->current_number;
+            $formatted = sprintf('%s/%s/%05d', $prefix, $year, $num);
+
+            while (DB::table($table)->where($col, $formatted)->exists()) {
+                $seq->increment('current_number');
+                $num = $seq->current_number;
+                $formatted = sprintf('%s/%s/%05d', $prefix, $year, $num);
+            }
+
+            return $formatted;
+        });
     }
 
     /** ---- Grade auto-assign from measured oil % (never hardcoded) ---- */

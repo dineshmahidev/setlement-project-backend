@@ -34,7 +34,6 @@ class InwardController extends Controller
 
     public function store(Request $request)
     {
-        $companyId = $this->activeCompanyId();
         $data = $request->validate([
             'branch_id' => 'required|exists:branches,id',
             'party_id' => 'nullable|exists:vendors,id',
@@ -43,6 +42,7 @@ class InwardController extends Controller
             'driver_name' => 'nullable|string|max:150',
             'driver_mobile' => 'nullable|string|max:30',
             'load_reference' => 'nullable|string|max:100',
+            'bill_no' => 'nullable|string|max:100',
             'notes' => 'nullable|string',
             'items' => 'required|array|min:1',
             'items.*.item_id' => 'required|exists:items,id',
@@ -55,6 +55,8 @@ class InwardController extends Controller
             'items.*.additional_charges' => 'nullable|numeric|min:0',
             'items.*.notes' => 'nullable|string',
         ]);
+
+        $companyId = $this->activeCompanyId() ?? \App\Models\Branch::find($data['branch_id'])?->company_id ?? 1;
 
         $entry = DB::transaction(function () use ($data, $companyId) {
             $entryNumber = $this->ledger->nextNumber('INW', 'inward_entries', 'entry_number');
@@ -75,18 +77,20 @@ class InwardController extends Controller
                 'vehicle_number' => $data['vehicle_number'] ?? null,
                 'driver_name' => $data['driver_name'] ?? null,
                 'driver_mobile' => $data['driver_mobile'] ?? null,
-                'load_reference' => $data['load_reference'] ?? null,
+                'load_reference' => $data['bill_no'] ?? $data['load_reference'] ?? null,
                 'total_amount' => round($total, 2),
                 'status' => 'DRAFT',
                 'notes' => $data['notes'] ?? null,
-                'created_by' => request()->user()->id,
+                'created_by' => auth()->id() ?? $request->user()?->id,
             ]);
 
             foreach ($items as $i) {
                 $entry->items()->create($i);
             }
 
-            return $entry;
+            // Auto-confirm: immediately credit lots and update inventory ledger (no manual confirm needed)
+            $userId = (int) (auth()->id() ?? $request->user()?->id ?? 1);
+            return $this->ledger->confirmInward($entry, $userId);
         });
 
         return response()->json($entry->load(['items.item:id,code,name', 'party:id,vendor_name', 'branch:id,branch_name']), 201);
@@ -155,5 +159,35 @@ class InwardController extends Controller
         } catch (\Throwable $e) {
             return $this->error($e, 422);
         }
+    }
+
+    public function destroy(InwardEntry $inward)
+    {
+        $userId = (int) (auth()->id() ?? request()->user()?->id ?? 1);
+        try {
+            DB::transaction(function () use ($inward, $userId) {
+                if ($inward->status === 'CONFIRMED') {
+                    $this->ledger->cancelInward($inward, $userId, 'Moved to trash');
+                }
+                $inward->delete();
+            });
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Inward entry deleted successfully',
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
+        }
+    }
+
+    public function pdf(InwardEntry $inward)
+    {
+        $pdf = app(\App\Services\PdfService::class)->generateInwardPdf($inward);
+        $fileName = str_replace(['/', '\\'], '-', $inward->entry_number) . '.pdf';
+        return $pdf->stream($fileName);
     }
 }

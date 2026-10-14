@@ -35,12 +35,11 @@ class OutwardController extends Controller
 
     public function store(Request $request)
     {
-        $companyId = $this->activeCompanyId();
         $data = $request->validate([
             'branch_id' => 'required|exists:branches,id',
             'party_id' => 'nullable|exists:vendors,id',
             'date' => 'required|date',
-            'dispatch_type' => 'required|in:DIRECT,MIXED',
+            'dispatch_type' => 'nullable|in:DIRECT,MIXED',
             'vehicle_number' => 'nullable|string|max:50',
             'driver_name' => 'nullable|string|max:150',
             'driver_mobile' => 'nullable|string|max:30',
@@ -48,6 +47,7 @@ class OutwardController extends Controller
             'is_sale' => 'nullable|boolean',
             'payment_status' => 'nullable|string|max:20',
             'notes' => 'nullable|string',
+            'remarks' => 'nullable|string',
             'items' => 'required|array|min:1',
             'items.*.item_id' => 'required|exists:items,id',
             'items.*.lot_id' => 'nullable|exists:lots,id',
@@ -61,7 +61,10 @@ class OutwardController extends Controller
             'items.*.notes' => 'nullable|string',
         ]);
 
-        $entry = DB::transaction(function () use ($data, $companyId) {
+        $companyId = $this->activeCompanyId() ?? \App\Models\Branch::find($data['branch_id'])?->company_id ?? 1;
+        $userId = (int) (auth()->id() ?? $request->user()?->id ?? 1);
+
+        $entry = DB::transaction(function () use ($data, $companyId, $userId, $request) {
             $entryNumber = $this->ledger->nextNumber('OUT', 'outward_entries', 'entry_number');
             $total = 0;
             $items = [];
@@ -77,7 +80,7 @@ class OutwardController extends Controller
                 'branch_id' => $data['branch_id'],
                 'party_id' => $data['party_id'] ?? null,
                 'date' => $data['date'],
-                'dispatch_type' => $data['dispatch_type'],
+                'dispatch_type' => $data['dispatch_type'] ?? 'DIRECT',
                 'vehicle_number' => $data['vehicle_number'] ?? null,
                 'driver_name' => $data['driver_name'] ?? null,
                 'driver_mobile' => $data['driver_mobile'] ?? null,
@@ -86,8 +89,8 @@ class OutwardController extends Controller
                 'is_sale' => $data['is_sale'] ?? false,
                 'payment_status' => $data['payment_status'] ?? null,
                 'status' => 'DRAFT',
-                'notes' => $data['notes'] ?? null,
-                'created_by' => request()->user()->id,
+                'notes' => $data['notes'] ?? $data['remarks'] ?? null,
+                'created_by' => $userId,
             ]);
 
             foreach ($items as $i) {
@@ -97,7 +100,15 @@ class OutwardController extends Controller
             return $entry;
         });
 
-        return response()->json($entry->load(['items.item:id,code,name', 'party:id,vendor_name', 'branch:id,branch_name']), 201);
+        // Automatically confirm outward to deduct stock from lots
+        try {
+            $entry = $this->ledger->confirmOutward($entry, $userId);
+        } catch (\Throwable $e) {
+            // keep entry if confirmation encounters an issue or re-throw
+            throw $e;
+        }
+
+        return response()->json($entry->load(['items.item:id,code,name', 'items.lot:id,lot_number', 'party:id,vendor_name', 'branch:id,branch_name']), 201);
     }
 
     public function show(OutwardEntry $outward)
@@ -163,5 +174,35 @@ class OutwardController extends Controller
         } catch (\Throwable $e) {
             return $this->error($e, 422);
         }
+    }
+
+    public function destroy(OutwardEntry $outward)
+    {
+        $userId = (int) (auth()->id() ?? request()->user()?->id ?? 1);
+        try {
+            DB::transaction(function () use ($outward, $userId) {
+                if ($outward->status === 'CONFIRMED') {
+                    $this->ledger->cancelOutward($outward, $userId, 'Moved to trash');
+                }
+                $outward->delete();
+            });
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Outward entry deleted successfully',
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
+        }
+    }
+
+    public function pdf(OutwardEntry $outward)
+    {
+        $pdf = app(\App\Services\PdfService::class)->generateOutwardPdf($outward);
+        $fileName = str_replace(['/', '\\'], '-', $outward->entry_number) . '.pdf';
+        return $pdf->stream($fileName);
     }
 }

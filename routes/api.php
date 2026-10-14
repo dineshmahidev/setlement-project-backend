@@ -3,6 +3,7 @@
 use App\Http\Controllers\AuditLogController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\BranchController;
+use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\CompanyController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DebitNoteController;
@@ -20,13 +21,16 @@ use App\Http\Controllers\ReportController;
 use App\Http\Controllers\RoleController;
 use App\Http\Controllers\SettingController;
 use App\Http\Controllers\SettlementController;
+use App\Http\Controllers\UnitController;
+use App\Http\Controllers\TrashController;
 use App\Http\Controllers\UserController;
 use App\Http\Controllers\VendorController;
 use App\Http\Controllers\VendorLedgerController;
 use Illuminate\Support\Facades\Route;
 
-// Public Auth routes
+// Public routes
 Route::post('/login', [AuthController::class, 'login']);
+Route::get('/public/cms/{slug?}', [CompanyController::class, 'publicCms']);
 
 // Authenticated routes
 Route::middleware(['auth:sanctum', 'company.scope'])->group(function () {
@@ -37,21 +41,38 @@ Route::middleware(['auth:sanctum', 'company.scope'])->group(function () {
     Route::get('/dashboard', [DashboardController::class, 'index']);
 
     // Companies (multi-company switcher + admin CRUD)
-    Route::get('/companies/all', [CompanyController::class, 'all']);
-    Route::apiResource('companies', CompanyController::class)->except(['create', 'edit']);
+    Route::get('/companies', [CompanyController::class, 'index']);
+    Route::middleware('super_admin')->group(function () {
+        Route::get('/companies/all', [CompanyController::class, 'all']);
+        Route::get('/companies/{company}', [CompanyController::class, 'show']);
+        Route::post('/companies', [CompanyController::class, 'store']);
+        Route::put('/companies/{company}', [CompanyController::class, 'update']);
+        Route::patch('/companies/{company}', [CompanyController::class, 'update']);
+        Route::delete('/companies/{company}', [CompanyController::class, 'destroy']);
+        Route::post('/companies/{company}/upload-signature', [CompanyController::class, 'uploadSignature']);
+    });
 
-    // Branches
-    Route::apiResource('branches', BranchController::class);
+    // Branches / Godowns (Listing allowed for dropdowns; CRUD restricted to Super Admin)
+    Route::get('/branches', [BranchController::class, 'index']);
+    Route::get('/branches/{branch}', [BranchController::class, 'show']);
+    Route::middleware('super_admin')->group(function () {
+        Route::post('/branches', [BranchController::class, 'store']);
+        Route::put('/branches/{branch}', [BranchController::class, 'update']);
+        Route::patch('/branches/{branch}', [BranchController::class, 'update']);
+        Route::delete('/branches/{branch}', [BranchController::class, 'destroy']);
+    });
 
     // Vendors
     Route::get('/vendors/search', [VendorController::class, 'search']);
     Route::post('/vendors/lookup-gstin', [VendorController::class, 'lookupGstin']);
     Route::apiResource('vendors', VendorController::class);
 
-    // Products & Items
+    // Products & Items & Units
     Route::apiResource('products', ProductController::class);
     Route::apiResource('items', ItemController::class);
-Route::apiResource('materials', MaterialController::class);
+    Route::apiResource('materials', MaterialController::class);
+    Route::apiResource('units', UnitController::class);
+    Route::apiResource('categories', CategoryController::class);
 
     // Invoices
     Route::post('/invoices/{invoice}/cancel', [InvoiceController::class, 'cancel']);
@@ -76,7 +97,9 @@ Route::apiResource('materials', MaterialController::class);
     // Inventory Dashboard & Transactions
     Route::get('/inventory/party-summary', [InventoryController::class, 'partySummary']);
     Route::get('/inventory/stock', [InventoryController::class, 'stock']);
+    Route::get('/inventory/stock/pdf', [InventoryController::class, 'stockPdf']);
     Route::get('/inventory/ledger', [InventoryController::class, 'ledger']);
+    Route::get('/inventory/ledger/pdf', [InventoryController::class, 'ledgerPdf']);
     Route::get('/inventory/low-stock', [InventoryController::class, 'lowStock']);
     Route::get('/inventory/dashboard-kpis', [InventoryController::class, 'dashboardKpis']);
     Route::post('/inventory/stock-in', [InventoryController::class, 'stockIn']);
@@ -97,41 +120,54 @@ Route::apiResource('materials', MaterialController::class);
     });
 
     // Inward (multi-item stock receipt)
+    Route::get('/inward/{inward}/pdf', [InwardController::class, 'pdf']);
     Route::post('/inward/{inward}/confirm', [InwardController::class, 'confirm'])->middleware('permission:inventory.stock_in');
     Route::post('/inward/{inward}/cancel', [InwardController::class, 'cancel'])->middleware('permission:inventory.stock_in');
     Route::middleware('permission:inventory.view')->group(function () {
-        Route::apiResource('inward', InwardController::class)->except(['destroy']);
+        Route::apiResource('inward', InwardController::class);
     });
     Route::post('/inward', [InwardController::class, 'store'])->middleware('permission:inventory.stock_in');
 
     // Outward / Dispatch (direct + mixed)
+    Route::get('/outward/{outward}/pdf', [OutwardController::class, 'pdf']);
     Route::post('/outward/{outward}/confirm', [OutwardController::class, 'confirm'])->middleware('permission:inventory.stock_out');
     Route::post('/outward/{outward}/cancel', [OutwardController::class, 'cancel'])->middleware('permission:inventory.stock_out');
     Route::middleware('permission:inventory.view')->group(function () {
-        Route::apiResource('outward', OutwardController::class)->except(['destroy']);
+        Route::apiResource('outward', OutwardController::class);
     });
     Route::post('/outward', [OutwardController::class, 'store'])->middleware('permission:inventory.stock_out');
 
     // Mixing / Production
+    Route::get('/production/{production}/pdf', [ProductionController::class, 'pdf']);
     Route::post('/production/{production}/confirm', [ProductionController::class, 'confirm'])->middleware('permission:inventory.stock_in');
     Route::middleware('permission:inventory.view')->group(function () {
-        Route::apiResource('production', ProductionController::class)->only(['index', 'store', 'show']);
+        Route::apiResource('production', ProductionController::class)->only(['index', 'store', 'show', 'destroy']);
     });
 
     // Reports
     Route::get('/reports/{type}', [ReportController::class, 'index']);
     Route::get('/reports/{type}/export', [ReportController::class, 'export']);
 
-    // User Management & Roles
-    Route::apiResource('users', UserController::class);
-    Route::get('/roles', [RoleController::class, 'index']);
+    // Confidential Modules - STRICTLY RESTRICTED TO SUPER ADMIN / MASTER ADMIN ONLY
+    Route::middleware('super_admin')->group(function () {
+        // User Management & Roles
+        Route::apiResource('users', UserController::class);
+        Route::get('/roles', [RoleController::class, 'index']);
 
-    // Settings
-    Route::get('/settings', [SettingController::class, 'index']);
-    Route::put('/settings', [SettingController::class, 'update']);
-    Route::post('/settings/gst-rates', [SettingController::class, 'storeGstRate']);
+        // System Settings
+        Route::get('/settings', [SettingController::class, 'index']);
+        Route::put('/settings', [SettingController::class, 'update']);
+        Route::post('/settings/upload-signature', [SettingController::class, 'uploadSignature']);
+        Route::post('/settings/gst-rates', [SettingController::class, 'storeGstRate']);
 
-    // Audit Logs
-    Route::get('/audit-logs', [AuditLogController::class, 'index']);
-    Route::get('/audit-logs/{auditLog}', [AuditLogController::class, 'show']);
+        // Audit Trail Logs
+        Route::get('/audit-logs', [AuditLogController::class, 'index']);
+        Route::get('/audit-logs/{auditLog}', [AuditLogController::class, 'show']);
+
+        // Trash (Soft Delete management)
+        Route::get('/trash', [TrashController::class, 'index']);
+        Route::post('/trash/{type}/{id}/restore', [TrashController::class, 'restore']);
+        Route::delete('/trash/{type}/{id}/force-delete', [TrashController::class, 'forceDelete']);
+        Route::post('/trash/empty', [TrashController::class, 'emptyTrash']);
+    });
 });

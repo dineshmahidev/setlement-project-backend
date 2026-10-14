@@ -83,13 +83,31 @@ class DocumentSequence extends Model
             $nextNum = $seq->current_number;
             $formattedNum = str_pad((string)$nextNum, 4, '0', STR_PAD_LEFT);
 
-            // Format based on standard specifications
+            // Format based on standard specifications with collision check
             if ($documentType === 'settlement') {
-                return "{$prefix}/{$year}/{$branchCode}/{$formattedNum}";
+                $candidate = "{$prefix}/{$year}/{$branchCode}/{$formattedNum}";
+                while (DB::table('settlements')->where('settlement_number', $candidate)->exists()) {
+                    $seq->increment('current_number');
+                    $formattedNum = str_pad((string)$seq->current_number, 4, '0', STR_PAD_LEFT);
+                    $candidate = "{$prefix}/{$year}/{$branchCode}/{$formattedNum}";
+                }
+                return $candidate;
             } elseif ($documentType === 'debit_note') {
-                return "{$prefix}/{$formattedNum}/{$fy}";
+                $candidate = "{$prefix}/{$formattedNum}/{$fy}";
+                while (DB::table('debit_notes')->where('debit_note_number', $candidate)->exists()) {
+                    $seq->increment('current_number');
+                    $formattedNum = str_pad((string)$seq->current_number, 4, '0', STR_PAD_LEFT);
+                    $candidate = "{$prefix}/{$formattedNum}/{$fy}";
+                }
+                return $candidate;
             } elseif ($documentType === 'invoice') {
-                return "{$prefix}/{$formattedNum}/{$fy}";
+                $candidate = "{$prefix}/{$formattedNum}/{$fy}";
+                while (DB::table('invoices')->where('invoice_number', $candidate)->exists()) {
+                    $seq->increment('current_number');
+                    $formattedNum = str_pad((string)$seq->current_number, 4, '0', STR_PAD_LEFT);
+                    $candidate = "{$prefix}/{$formattedNum}/{$fy}";
+                }
+                return $candidate;
             }
 
             return "{$prefix}/{$formattedNum}/{$fy}";

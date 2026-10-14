@@ -55,9 +55,14 @@ class AuthController extends Controller
     {
         $user = $request->user()->loadMissing(['role.permissions', 'permissions', 'defaultBranch', 'branches.company', 'companies']);
 
+        $requestedCompanyId = $this->activeCompanyId()
+            ?? $request->header('X-Company-Id')
+            ?? $request->input('company_id')
+            ?? $request->attributes->get('active_company_id');
+
         return response()->json([
             'success' => true,
-            'data' => $this->userPayload($user, request('active_company_id')),
+            'data' => $this->userPayload($user, $requestedCompanyId),
         ]);
     }
 
@@ -94,9 +99,22 @@ class AuthController extends Controller
 
         $activeCompany = $this->resolveActiveCompany($user, $companies, $requestedCompanyId);
 
-        $branches = $user->branches
-            ->filter(fn ($b) => ! $activeCompany || (int) $b->company_id === (int) $activeCompany->id)
-            ->values();
+        if ($user->isSuperAdmin()) {
+            $branches = $activeCompany
+                ? \App\Models\Branch::query()->where('company_id', $activeCompany->id)->get()
+                : \App\Models\Branch::query()->get();
+        } else {
+            $branches = $user->branches
+                ->filter(fn ($b) => ! $activeCompany || (int) $b->company_id === (int) $activeCompany->id)
+                ->values();
+
+            if ($branches->isEmpty() && $user->default_branch_id) {
+                $default = $user->defaultBranch;
+                if (! $activeCompany || ($default && (int) $default->company_id === (int) $activeCompany->id)) {
+                    $branches = collect([$default])->filter();
+                }
+            }
+        }
 
         return [
             'id' => $user->id,
@@ -122,8 +140,8 @@ class AuthController extends Controller
 
     private function resolveActiveCompany(User $user, $companies, $requestedCompanyId = null): ?Company
     {
-        if ($requestedCompanyId) {
-            $found = $companies->firstWhere('id', (int) $requestedCompanyId);
+        if ($requestedCompanyId !== null && $requestedCompanyId !== '') {
+            $found = $companies->first(fn ($c) => (int) $c->id === (int) $requestedCompanyId || $c->slug === (string) $requestedCompanyId || $c->code === (string) $requestedCompanyId);
             if ($found) {
                 return $found;
             }
@@ -142,8 +160,22 @@ class AuthController extends Controller
             'short_name' => $company->short_name,
             'gstin' => $company->gstin,
             'city' => $company->city,
+            'tagline' => $company->tagline,
+            'sub_tagline' => $company->sub_tagline,
+            'logo_path' => $company->logo_path,
+            'logo_transparent_path' => $company->logo_transparent_path,
+            'banner_path' => $company->banner_path,
+            'signature_path' => $company->signature_path,
             'status' => $company->status,
             'panel_url' => '/panel/' . $company->slug,
+            'branches' => $company->branches->map(fn ($b) => [
+                'id' => $b->id,
+                'company_id' => $b->company_id,
+                'branch_name' => $b->branch_name,
+                'branch_code' => $b->branch_code,
+                'city' => $b->city,
+            ])->values(),
+            'branches_count' => $company->branches->count(),
         ];
     }
 

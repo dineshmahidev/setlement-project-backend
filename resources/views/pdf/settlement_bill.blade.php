@@ -35,8 +35,9 @@
             margin-bottom: 2px;
         }
         .company-logo-cell {
-            width: 38px;
+            width: 58px;
             vertical-align: middle;
+            padding-right: 6px;
         }
         .company-name-cell {
             vertical-align: middle;
@@ -181,14 +182,21 @@
     <table class="company-header-table">
         <tr>
             <td class="company-logo-cell">
-                <svg width="36" height="36" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <circle cx="50" cy="50" r="48" fill="#fdfbf7" stroke="#b37d14" stroke-width="2.5"/>
-                    <path d="M50 15 C50 35 30 45 30 65 C30 75 40 85 50 85 C60 85 70 75 70 65 C70 45 50 35 50 15 Z" fill="#0b3558"/>
-                    <path d="M50 20 C50 38 36 48 38 65 C40 73 45 80 50 80 C55 80 60 73 62 65 C64 48 50 38 50 20 Z" fill="#b37d14"/>
-                    <path d="M50 28 L50 82" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
-                    <path d="M42 42 Q50 48 58 42" stroke="#ffffff" stroke-width="2" fill="none"/>
-                    <path d="M40 54 Q50 60 60 54" stroke="#ffffff" stroke-width="2" fill="none"/>
-                </svg>
+                @php
+                    $logoBase64 = $company->logo_base64;
+                @endphp
+                @if($logoBase64)
+                    <img src="{{ $logoBase64 }}" style="max-height: 52px; max-width: 58px; object-fit: contain; vertical-align: middle;" alt="Logo">
+                @else
+                    <svg width="36" height="36" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="50" cy="50" r="48" fill="#fdfbf7" stroke="#b37d14" stroke-width="2.5"/>
+                        <path d="M50 15 C50 35 30 45 30 65 C30 75 40 85 50 85 C60 85 70 75 70 65 C70 45 50 35 50 15 Z" fill="#0b3558"/>
+                        <path d="M50 20 C50 38 36 48 38 65 C40 73 45 80 50 80 C55 80 60 73 62 65 C64 48 50 38 50 20 Z" fill="#b37d14"/>
+                        <path d="M50 28 L50 82" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
+                        <path d="M42 42 Q50 48 58 42" stroke="#ffffff" stroke-width="2" fill="none"/>
+                        <path d="M40 54 Q50 60 60 54" stroke="#ffffff" stroke-width="2" fill="none"/>
+                    </svg>
+                @endif
             </td>
             <td class="company-name-cell">
                 <div class="company-title">{{ $company->company_name }}</div>
@@ -199,6 +207,7 @@
                 <div>{{ collect([$company->address, $company->city, $company->state, $company->pincode])->filter()->implode(', ') }}</div>
                 <div><strong>GSTIN :</strong> <span class="text-bold">{{ $company->gstin ?: '-' }}</span></div>
                 <div><strong>State :</strong> {{ $company->state ?: '-' }} &nbsp;|&nbsp; <strong>State Code :</strong> {{ $company->state_code ?: '33' }}</div>
+                <div><strong>Phone :</strong> {{ $company->phone ?: '-' }}@if($company->phone_2) / {{ $company->phone_2 }}@endif @if($company->email)&nbsp;|&nbsp; <strong>Email :</strong> {{ $company->email }}@endif</div>
             </td>
         </tr>
     </table>
@@ -225,6 +234,9 @@
                     {{ $settlement->vendor->address ?? '' }}<br>
                     {{ $settlement->vendor->city ?? '' }} {{ $settlement->vendor->pincode ? ', ' . $settlement->vendor->pincode : '' }}<br>
                     <strong>GSTIN :</strong> <span class="text-bold">{{ $settlement->vendor->gstin ?? '-' }}</span>
+                    @if(!empty($settlement->vendor->phone))
+                        &nbsp;|&nbsp; <strong>Phone :</strong> {{ $settlement->vendor->phone }}@if(!empty($settlement->vendor->phone_2)) / {{ $settlement->vendor->phone_2 }}@endif
+                    @endif
                 </div>
                 <div style="margin-top: 3px; padding-top: 2px; border-top: 0.6pt solid #cbd5e0; font-size: 7.5pt;">
                     <strong>Product &nbsp;&nbsp;&nbsp;&nbsp;</strong> <span class="text-bold text-navy">{{ $settlement->product->product_name ?? '-' }}</span>
@@ -530,13 +542,20 @@
     </div>
 
     <!-- Footer Signature -->
-    <div class="signature-box" style="margin-top: 14px;">
-        <div style="display: table-cell; width: 50%; font-size: 7.5pt; font-weight: bold; color: #0b3558; vertical-align: bottom;">
+    <div class="signature-box" style="margin-top: 10px;">
+        <div style="display: table-cell; width: 45%; font-size: 7.5pt; font-weight: bold; color: #0b3558; vertical-align: bottom;">
             AUTHORISED SIGNATURE
         </div>
-        <div style="display: table-cell; width: 50%; text-align: right; vertical-align: bottom;">
-            <div style="display: inline-block; border-top: 1.2pt solid #0b3558; padding-top: 2px; font-size: 7.5pt; font-weight: bold; color: #0b3558; width: 170px; text-align: center;">
-                For {{ $company->company_name }}
+        <div style="display: table-cell; width: 55%; text-align: right; vertical-align: bottom;">
+            <div style="display: inline-block; width: 180px; text-align: center;">
+                @if(!empty($company->signature_base64))
+                    <div style="text-align: center; margin-bottom: 2px;">
+                        <img src="{{ $company->signature_base64 }}" style="max-height: 38px; max-width: 150px; display: inline-block;" alt="Signature">
+                    </div>
+                @endif
+                <div style="border-top: 1.2pt solid #0b3558; padding-top: 2px; font-size: 7.5pt; font-weight: bold; color: #0b3558;">
+                    For {{ $company->company_name }}
+                </div>
             </div>
         </div>
     </div>

@@ -126,6 +126,19 @@ abstract class Controller
         return $this->activeCompanyId() ?? $fallback;
     }
 
+    protected function guardSuperAdmin(): void
+    {
+        $user = request()->user();
+        if (! $user || ! $user->isSuperAdmin()) {
+            abort(403, 'Unauthorized: This confidential area is strictly restricted to Super Admin only.');
+        }
+    }
+
+    protected function guardAdmin(): void
+    {
+        $this->guardSuperAdmin();
+    }
+
     protected function error(\Throwable $e, int $code = 400): JsonResponse
     {
         return response()->json(['message' => $e->getMessage()], $code);
