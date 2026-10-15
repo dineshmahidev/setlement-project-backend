@@ -373,7 +373,7 @@ class InventoryService
                 'date' => $adj->date,
                 'branch_id' => $adj->branch_id,
                 'item_id' => $adj->item_id,
-                'type' => $direction === 'IN' ? 'ADJUSTMENT_IN' : 'ADJUSTMENT_OUT',
+                'type' => $direction === 'IN' ? 'STOCK_IN' : 'STOCK_OUT',
                 'quantity' => $qty,
                 'signed_quantity' => $signed,
                 'unit_id' => $adj->unit_id,

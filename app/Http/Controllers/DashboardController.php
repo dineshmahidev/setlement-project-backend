@@ -22,9 +22,12 @@ class DashboardController extends Controller
         $endDate = $request->get('to_date', Carbon::now()->endOfMonth()->toDateString());
 
         $user = $request->user();
-        $branchId = $request->get('branch_id') ?: $request->header('X-Branch-Id');
+        $companyId = $this->activeCompanyId();
+        $companyBranchIds = $companyId ? Branch::where('company_id', $companyId)->pluck('id')->all() : null;
+        $explicitBranch = $request->get('branch_id');
+        $branchId = $explicitBranch ?: ($companyBranchIds ?: null);
 
-        $allowedBranchIds = $user ? $user->allowedBranchIds($this->activeCompanyId()) : null;
+        $allowedBranchIds = $user ? $user->allowedBranchIds($companyId) : null;
 
         // Clamp a requested branch to what the user may see inside this company
         if ($branchId && is_array($allowedBranchIds)) {

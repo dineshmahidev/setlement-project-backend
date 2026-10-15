@@ -16,6 +16,22 @@ class UserController extends Controller
     {
         $query = User::with(['role', 'defaultBranch.company', 'branches.company', 'companies']);
 
+        // Non-superadmin: HIDE Super Admin users completely
+        if (! auth()->user()?->isSuperAdmin()) {
+            $query->whereDoesntHave('role', function ($r) {
+                $r->whereIn('name', [
+                    'super_admin',
+                    'superadmin',
+                    'Super Admin',
+                    'SUPER ADMIN',
+                    'master_admin',
+                    'masteradmin',
+                    'Master Admin',
+                    'MASTER ADMIN',
+                ]);
+            })->where('email', '!=', 'admin@laxmitraders.com');
+        }
+
         // Check if explicit company filter was sent from frontend
         if ($request->filled('company_id')) {
             $cId = (int) $request->company_id;
@@ -74,6 +90,8 @@ class UserController extends Controller
 
     public function store(Request $request)
     {
+        $isSuper = auth()->user()?->isSuperAdmin();
+
         $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|email|unique:users,email',
@@ -83,15 +101,29 @@ class UserController extends Controller
             'role_id' => 'required|exists:roles,id',
             'company_id' => 'nullable|exists:companies,id',
             'company_ids' => 'nullable|array',
-            'company_ids.*' => 'exists:companies,id',
             'default_branch_id' => 'nullable|exists:branches,id',
             'status' => 'nullable|in:active,inactive,ACTIVE,INACTIVE',
             'branch_ids' => 'nullable|array',
-            'branch_ids.*' => 'exists:branches,id',
         ]);
+
+        // Prevent normal admin from assigning Super Admin role
+        if (! $isSuper) {
+            $role = Role::find($request->role_id);
+            if ($role && in_array(strtolower(trim($role->name)), ['super_admin', 'superadmin', 'master_admin', 'masteradmin'])) {
+                return response()->json(['success' => false, 'message' => 'Unauthorized: Cannot assign Super Admin role.'], 403);
+            }
+        }
 
         $branchIds = (array) ($request->branch_ids ?? []);
         $defaultBranchId = $request->default_branch_id ? (int) $request->default_branch_id : null;
+
+        // Super Admin can assign ALL branches or ALL companies to any user
+        if ($isSuper && ($request->boolean('all_branches') || in_array('all', $branchIds, true))) {
+            $branchIds = Branch::pluck('id')->all();
+        }
+        if ($isSuper && ($request->boolean('all_companies') || in_array('all', (array)$request->company_ids, true))) {
+            $request->merge(['company_ids' => \App\Models\Company::pluck('id')->all()]);
+        }
 
         // Ensure default branch is in accessible branches list
         if ($defaultBranchId && ! in_array($defaultBranchId, array_map('intval', $branchIds), true)) {
@@ -140,6 +172,13 @@ class UserController extends Controller
 
     public function update(Request $request, User $user)
     {
+        $isSuper = auth()->user()?->isSuperAdmin();
+
+        // Non-superadmin cannot touch a Super Admin user
+        if (! $isSuper && $user->isSuperAdmin()) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized: Cannot modify a Super Admin user.'], 403);
+        }
+
         $request->validate([
             'name' => 'required|string|max:255',
             'email' => ['required', 'email', Rule::unique('users')->ignore($user->id)],
@@ -149,16 +188,30 @@ class UserController extends Controller
             'role_id' => 'required|exists:roles,id',
             'company_id' => 'nullable|exists:companies,id',
             'company_ids' => 'nullable|array',
-            'company_ids.*' => 'exists:companies,id',
             'default_branch_id' => 'nullable|exists:branches,id',
             'status' => 'nullable|in:active,inactive,ACTIVE,INACTIVE',
             'branch_ids' => 'nullable|array',
-            'branch_ids.*' => 'exists:branches,id',
         ]);
+
+        // Prevent normal admin from assigning Super Admin role
+        if (! $isSuper) {
+            $role = Role::find($request->role_id);
+            if ($role && in_array(strtolower(trim($role->name)), ['super_admin', 'superadmin', 'master_admin', 'masteradmin'])) {
+                return response()->json(['success' => false, 'message' => 'Unauthorized: Cannot assign Super Admin role.'], 403);
+            }
+        }
 
         $old = $user->toArray();
         $branchIds = (array) ($request->branch_ids ?? $user->branches()->pluck('branches.id')->all());
         $defaultBranchId = $request->filled('default_branch_id') ? (int) $request->default_branch_id : $user->default_branch_id;
+
+        // Super Admin can assign ALL branches or ALL companies to any user
+        if ($isSuper && ($request->boolean('all_branches') || in_array('all', $branchIds, true))) {
+            $branchIds = Branch::pluck('id')->all();
+        }
+        if ($isSuper && ($request->boolean('all_companies') || in_array('all', (array)$request->company_ids, true))) {
+            $request->merge(['company_ids' => \App\Models\Company::pluck('id')->all()]);
+        }
 
         if ($defaultBranchId && ! in_array($defaultBranchId, array_map('intval', $branchIds), true)) {
             $branchIds[] = $defaultBranchId;
@@ -200,6 +253,11 @@ class UserController extends Controller
     {
         if ($user->id === auth()->id()) {
             return response()->json(['success' => false, 'message' => 'You cannot delete yourself.'], 422);
+        }
+
+        // Non-superadmin cannot delete a Super Admin user
+        if (! auth()->user()?->isSuperAdmin() && $user->isSuperAdmin()) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized: Cannot delete a Super Admin user.'], 403);
         }
 
         $this->guardUserVisibility($user);
@@ -263,6 +321,11 @@ class UserController extends Controller
     {
         if (auth()->user()?->isSuperAdmin()) {
             return;
+        }
+
+        // Normal admin CANNOT see, touch, or interact with Super Admin users
+        if ($user->isSuperAdmin()) {
+            abort(404, 'User not found.');
         }
 
         $companyId = $this->activeCompanyId();

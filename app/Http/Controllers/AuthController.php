@@ -181,6 +181,10 @@ class AuthController extends Controller
 
     private function collectPermissions(User $user): array
     {
+        if ($user->isSuperAdmin()) {
+            return ['*'];
+        }
+
         $permissions = [];
         foreach ($user->role->permissions ?? [] as $p) {
             $permissions[] = $p->name;
@@ -189,6 +193,81 @@ class AuthController extends Controller
             if ($p->pivot->granted) {
                 $permissions[] = $p->name;
             }
+        }
+
+        if ($user->isAdmin()) {
+            $adminDefaults = [
+                'inventory.view',
+                'inventory.stock_in',
+                'inventory.stock_out',
+                'inventory.transfer',
+                'inventory.adjust',
+                'settlement.view',
+                'settlement.create',
+                'settlement.edit',
+                'settlement.approve',
+                'settlement.cancel',
+                'settlements.view',
+                'settlements.create',
+                'settlements.edit',
+                'settlements.approve',
+                'settlements.cancel',
+                'settlements.pdf',
+                'users.view',
+                'users.create',
+                'users.edit',
+                'users.delete',
+                'users.manage',
+                'roles.view',
+                'items.view',
+                'items.create',
+                'items.edit',
+                'items.delete',
+                'products.view',
+                'products.create',
+                'products.edit',
+                'products.delete',
+                'vendors.view',
+                'vendors.create',
+                'vendors.edit',
+                'vendors.delete',
+                'vehicles.view',
+                'vehicles.create',
+                'vehicles.edit',
+                'vehicle.view',
+                'debit_notes.view',
+                'debit_notes.create',
+                'debit_notes.edit',
+                'debit_notes.approve',
+                'debit_notes.cancel',
+                'debit_notes.pdf',
+                'vendor_ledger.view',
+                'vendor_ledger.adjust',
+                'vendor_ledger.export',
+                'dashboard.view',
+                'reports.view',
+                'reports.export',
+            ];
+            $permissions = array_merge($permissions, $adminDefaults);
+        } elseif ($user->isBranchManager() || $user->isStaff()) {
+            $staffDefaults = [
+                'inventory.view',
+                'inventory.stock_in',
+                'inventory.stock_out',
+                'inventory.transfer',
+                'inventory.adjust',
+                'items.view',
+                'items.create',
+                'items.edit',
+                'products.view',
+                'vehicle.view',
+                'vehicles.view',
+                'vehicles.create',
+                'vehicles.edit',
+                'dashboard.view',
+                'reports.view',
+            ];
+            $permissions = array_merge($permissions, $staffDefaults);
         }
 
         return array_values(array_unique($permissions));

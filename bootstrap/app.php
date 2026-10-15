@@ -19,6 +19,7 @@ return Application::configure(basePath: dirname(__DIR__))
             'branch.scope' => \App\Http\Middleware\BranchScopeMiddleware::class,
             'company.scope' => \App\Http\Middleware\CompanyScopeMiddleware::class,
             'super_admin' => \App\Http\Middleware\SuperAdminMiddleware::class,
+            'admin_or_super' => \App\Http\Middleware\AdminOrSuperAdminMiddleware::class,
         ]);
         $middleware->validateCsrfTokens(except: ['api/*']);
     })

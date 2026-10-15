@@ -104,9 +104,8 @@ class InwardController extends Controller
 
     public function update(Request $request, InwardEntry $inward)
     {
-        if ($inward->status !== 'DRAFT') {
-            return response()->json(['success' => false, 'message' => 'Only draft entries can be edited.'], 422);
-        }
+        $userId = (int) (auth()->id() ?? $request->user()?->id ?? 1);
+
         $data = $request->validate([
             'branch_id' => 'sometimes|exists:branches,id',
             'party_id' => 'nullable|exists:vendors,id',
@@ -115,29 +114,72 @@ class InwardController extends Controller
             'driver_name' => 'nullable|string|max:150',
             'driver_mobile' => 'nullable|string|max:30',
             'load_reference' => 'nullable|string|max:100',
+            'bill_no' => 'nullable|string|max:100',
             'notes' => 'nullable|string',
+            'remarks' => 'nullable|string',
+            'items' => 'sometimes|array|min:1',
+            'items.*.item_id' => 'required_with:items|exists:items,id',
+            'items.*.quantity' => 'required_with:items|numeric|gt:0',
+            'items.*.unit_id' => 'nullable|exists:units,id',
+            'items.*.rate' => 'nullable|numeric',
+            'items.*.oil_pct' => 'nullable|numeric',
+            'items.*.grade_id' => 'nullable',
+            'items.*.lot_number' => 'nullable|string',
+            'items.*.notes' => 'nullable|string',
         ]);
-        $inward->update($data);
 
-        if ($request->has('items')) {
-            $request->validate([
-                'items' => 'required|array|min:1',
-                'items.*.item_id' => 'required|exists:items,id',
-                'items.*.quantity' => 'required|numeric|gt:0',
-            ]);
-            DB::transaction(function () use ($inward, $request) {
-                $inward->items()->delete();
-                $total = 0;
-                foreach ($request->items as $i) {
-                    $amount = round(((float) $i['quantity']) * ((float) ($i['rate'] ?? 0)) + ((float) ($i['additional_charges'] ?? 0)), 2);
-                    $total += $amount;
-                    $inward->items()->create($i + ['amount' => $amount]);
-                }
-                $inward->update(['total_amount' => round($total, 2)]);
-            });
+        if (isset($data['bill_no']) && empty($data['load_reference'])) {
+            $data['load_reference'] = $data['bill_no'];
+        }
+        if (isset($data['remarks']) && empty($data['notes'])) {
+            $data['notes'] = $data['remarks'];
         }
 
-        return response()->json($inward->fresh(['items.item:id,code,name', 'party:id,vendor_name', 'branch:id,branch_name']));
+        try {
+            DB::transaction(function () use ($inward, $data, $request, $userId) {
+                $wasConfirmed = ($inward->status === 'CONFIRMED');
+                if ($wasConfirmed) {
+                    $this->ledger->cancelInward($inward, $userId, 'Reversed for editing');
+                }
+
+                $headerData = collect($data)->except(['items', 'bill_no', 'remarks'])->all();
+                $headerData['status'] = 'DRAFT';
+                $inward->update($headerData);
+
+                if ($request->has('items') && is_array($request->items)) {
+                    $inward->items()->delete();
+                    $total = 0;
+                    foreach ($request->items as $i) {
+                        $rate = (float) ($i['rate'] ?? 0);
+                        $qty = (float) $i['quantity'];
+                        $amount = round($qty * $rate + ((float) ($i['additional_charges'] ?? 0)), 2);
+                        $total += $amount;
+                        $inward->items()->create([
+                            'item_id' => $i['item_id'],
+                            'quantity' => $qty,
+                            'unit_id' => $i['unit_id'] ?? null,
+                            'rate' => $rate,
+                            'amount' => $amount,
+                            'oil_pct' => $i['oil_pct'] ?? null,
+                            'grade_id' => $i['grade_id'] ?? null,
+                            'lot_number' => $i['lot_number'] ?? null,
+                            'notes' => $i['notes'] ?? null,
+                        ]);
+                    }
+                    $inward->update(['total_amount' => round($total, 2)]);
+                }
+
+                $this->ledger->confirmInward($inward, $userId);
+            });
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Inward entry updated successfully!',
+                'data' => $inward->fresh(['items.item:id,code,name', 'items.unit:id,code,name', 'party:id,vendor_name', 'branch:id,branch_name']),
+            ]);
+        } catch (\Throwable $e) {
+            return $this->error($e, 422);
+        }
     }
 
     public function confirm(Request $request, InwardEntry $inward)
@@ -189,5 +231,44 @@ class InwardController extends Controller
         $pdf = app(\App\Services\PdfService::class)->generateInwardPdf($inward);
         $fileName = str_replace(['/', '\\'], '-', $inward->entry_number) . '.pdf';
         return $pdf->stream($fileName);
+    }
+
+    public function reportPdf(Request $request)
+    {
+        $companyId = $this->activeCompanyId();
+        $q = InwardEntry::with(['party:id,vendor_name,vendor_code', 'branch:id,branch_name,branch_code', 'items.item:id,code,name', 'items.unit:id,code,name'])
+            ->orderBy('date', 'desc')
+            ->orderByDesc('id');
+        if ($companyId) $q->where('company_id', $companyId);
+        else $this->scopeBranches($q, 'branch_id');
+
+        if ($request->filled('branch_id')) $q->where('branch_id', $request->branch_id);
+        if ($request->filled('party_id')) $q->where('party_id', $request->party_id);
+        if ($request->filled('from_date')) $q->whereDate('date', '>=', $request->from_date);
+        if ($request->filled('to_date')) $q->whereDate('date', '<=', $request->to_date);
+        if ($request->filled('search')) {
+            $s = $request->search;
+            $q->where(fn ($qq) => $qq->where('entry_number', 'like', "%$s%")->orWhere('load_reference', 'like', "%$s%"));
+        }
+
+        $entries = $q->get();
+        $company = app(\App\Services\PdfService::class)->resolveCompany($request->branch_id ?? null);
+        $branchName = $request->filled('branch_id') ? \App\Models\Branch::find($request->branch_id)?->branch_name : null;
+        $partyName = $request->filled('party_id') ? \App\Models\Vendor::find($request->party_id)?->vendor_name : null;
+
+        $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadView('pdf.inward_report', [
+            'entries' => $entries,
+            'company' => $company,
+            'fromDate' => $request->from_date,
+            'toDate' => $request->to_date,
+            'branchName' => $branchName,
+            'partyName' => $partyName,
+        ])->setPaper('a4', 'landscape');
+
+        $fileName = 'Inward_Report';
+        if ($request->filled('from_date') && $request->filled('to_date')) {
+            $fileName .= '_' . $request->from_date . '_to_' . $request->to_date;
+        }
+        return $pdf->stream($fileName . '.pdf');
     }
 }

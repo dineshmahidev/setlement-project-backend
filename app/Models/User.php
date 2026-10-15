@@ -84,6 +84,42 @@ class User extends Authenticatable
             return true;
         }
 
+        // Admin role: can access settlement, inventory, and user management (plus operations like items, vendors, vehicles, debit notes, reports)
+        if ($this->isAdmin()) {
+            $forbiddenForAdmin = [
+                'super_admin',
+                'branches.manage',
+                'branches.create',
+                'branches.delete',
+                'companies.manage',
+                'companies.create',
+                'companies.delete',
+                'settings.manage',
+                'settings.edit',
+                'audit.view',
+                'cms.manage',
+            ];
+            if (in_array($permission, $forbiddenForAdmin, true)) {
+                return false;
+            }
+
+            return true;
+        }
+
+        // Branch Manager & Staff: only access to inventory section
+        if ($this->isBranchManager() || $this->isStaff()) {
+            if (str_starts_with($permission, 'inventory.') || in_array($permission, [
+                'items.view', 'items.create', 'items.edit',
+                'products.view', 'products.create', 'products.edit',
+                'vehicle.view', 'vehicles.view', 'vehicles.create', 'vehicles.edit',
+                'dashboard.view', 'reports.view',
+            ], true)) {
+                return true;
+            }
+
+            return false;
+        }
+
         // Check user specific permissions
         $userPerm = $this->permissions()->where('name', $permission)->first();
         if ($userPerm) {
@@ -110,6 +146,46 @@ class User extends Authenticatable
             'Master Admin',
             'MASTER ADMIN',
         ]) || $this->email === 'admin@laxmitraders.com';
+    }
+
+    public function isAdmin(): bool
+    {
+        return ! $this->isSuperAdmin() && $this->hasRole([
+            'admin',
+            'Admin',
+            'ADMIN',
+        ]);
+    }
+
+    public function isBranchManager(): bool
+    {
+        return $this->hasRole([
+            'branch_manager',
+            'Branch Manager',
+            'BRANCH MANAGER',
+            'manager',
+            'Manager',
+        ]);
+    }
+
+    public function isStaff(): bool
+    {
+        return $this->hasRole([
+            'staff',
+            'Staff',
+            'STAFF',
+            'operator',
+            'Operator',
+            'Staff / Operator',
+            'BILLING STAFF',
+            'billing staff',
+            'INVENTORY STAFF',
+            'inventory staff',
+            'ACCOUNTS STAFF',
+            'accounts staff',
+            'VIEWER',
+            'viewer',
+        ]);
     }
 
     public function canPermission(string $permission): bool

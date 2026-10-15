@@ -23,7 +23,7 @@ class VendorLedgerController extends Controller
 
         $query = VendorLedger::with(['branch', 'creator'])
             ->where('vendor_id', $vendor->id)
-            ->where('document_type', '!=', 'invoice');
+            ->whereNotIn('document_type', ['invoice', 'settlement', 'settlement_cancellation', 'INVOICE', 'SETTLEMENT']);
         $this->scopeBranches($query);
 
         if ($request->filled('branch_id')) {
@@ -34,19 +34,9 @@ class VendorLedgerController extends Controller
             $docType = strtolower($request->document_type);
             $query->where(function ($q) use ($docType) {
                 if ($docType === 'debit_note') {
-                    $q->where(function ($sub) {
-                        $sub->whereIn('document_type', ['debit_note', 'payment_adjustment'])
-                            ->orWhere(function ($s2) {
-                                $s2->where('document_type', 'settlement')->where('debit', '>', 0);
-                            });
-                    });
+                    $q->whereIn('document_type', ['debit_note', 'DEBIT_NOTE', 'payment_adjustment', 'ADVANCE']);
                 } elseif ($docType === 'credit_note') {
-                    $q->where(function ($sub) {
-                        $sub->whereIn('document_type', ['credit_note', 'receipt_adjustment', 'settlement_cancellation'])
-                            ->orWhere(function ($s2) {
-                                $s2->where('document_type', 'settlement')->where('credit', '>', 0);
-                            });
-                    });
+                    $q->whereIn('document_type', ['credit_note', 'CREDIT_NOTE', 'receipt_adjustment']);
                 } else {
                     $q->whereRaw('LOWER(document_type) = ?', [$docType]);
                 }
@@ -126,7 +116,7 @@ class VendorLedgerController extends Controller
 
         $query = VendorLedger::with(['branch'])
             ->where('vendor_id', $vendor->id)
-            ->where('document_type', '!=', 'invoice');
+            ->whereNotIn('document_type', ['invoice', 'settlement', 'settlement_cancellation', 'INVOICE', 'SETTLEMENT']);
         $this->scopeBranches($query);
 
         if ($request->filled('branch_id')) {
@@ -136,19 +126,9 @@ class VendorLedgerController extends Controller
             $docType = strtolower($request->document_type);
             $query->where(function ($q) use ($docType) {
                 if ($docType === 'debit_note') {
-                    $q->where(function ($sub) {
-                        $sub->whereIn('document_type', ['debit_note', 'payment_adjustment'])
-                            ->orWhere(function ($s2) {
-                                $s2->where('document_type', 'settlement')->where('debit', '>', 0);
-                            });
-                    });
+                    $q->whereIn('document_type', ['debit_note', 'DEBIT_NOTE', 'payment_adjustment', 'ADVANCE']);
                 } elseif ($docType === 'credit_note') {
-                    $q->where(function ($sub) {
-                        $sub->whereIn('document_type', ['credit_note', 'receipt_adjustment', 'settlement_cancellation'])
-                            ->orWhere(function ($s2) {
-                                $s2->where('document_type', 'settlement')->where('credit', '>', 0);
-                            });
-                    });
+                    $q->whereIn('document_type', ['credit_note', 'CREDIT_NOTE', 'receipt_adjustment']);
                 } else {
                     $q->whereRaw('LOWER(document_type) = ?', [$docType]);
                 }
@@ -185,67 +165,12 @@ class VendorLedgerController extends Controller
 
     private function syncSettlements(Vendor $vendor): void
     {
-        $recalcNeeded = false;
+        // Legacy settlement and invoice entries are purged so only debit/credit notes appear in vendor ledger
+        $deleted = VendorLedger::where('vendor_id', $vendor->id)
+            ->whereIn('document_type', ['settlement', 'settlement_cancellation', 'invoice', 'INVOICE', 'SETTLEMENT'])
+            ->delete();
 
-        // Auto-sync any existing settlements for this vendor that don't have ledger entries yet
-        $missingSettlements = \App\Models\Settlement::where('vendor_id', $vendor->id)
-            ->where('status', '!=', 'cancelled')
-            ->whereNotIn('id', function ($sub) {
-                $sub->select('document_id')
-                    ->from('vendor_ledger')
-                    ->where('document_type', 'settlement')
-                    ->whereNotNull('document_id');
-            })
-            ->get();
-
-        if ($missingSettlements->isNotEmpty()) {
-            foreach ($missingSettlements as $st) {
-                $amount = $st->getDebitCreditAmount();
-                $isDebit = $st->isDebitNoteSettlement();
-
-                VendorLedger::postTransaction([
-                    'vendor_id' => $st->vendor_id,
-                    'branch_id' => $st->branch_id,
-                    'transaction_date' => $st->settlement_date,
-                    'document_type' => 'settlement',
-                    'document_id' => $st->id,
-                    'document_number' => $st->settlement_number,
-                    'lot_number' => $st->lot_number,
-                    'description' => 'Settlement Bill #' . $st->settlement_number . ($st->bill_number ? ' (Bill #' . $st->bill_number . ')' : '') . ' - ' . number_format($st->final_weight_mt, 3) . ' MT',
-                    'debit' => $isDebit ? $amount : 0,
-                    'credit' => $isDebit ? 0 : $amount,
-                    'created_by' => $st->created_by,
-                ]);
-            }
-            $recalcNeeded = true;
-        }
-
-        // Auto-correct any existing settlement ledger entries with wrong debit/credit allocation
-        $settlementLedgers = VendorLedger::where('vendor_id', $vendor->id)
-            ->where('document_type', 'settlement')
-            ->whereNotNull('document_id')
-            ->get();
-
-        foreach ($settlementLedgers as $sLedger) {
-            $settlement = \App\Models\Settlement::find($sLedger->document_id);
-            if ($settlement) {
-                $isDebit = $settlement->isDebitNoteSettlement();
-                $amount = $settlement->getDebitCreditAmount();
-
-                $expectedDebit = $isDebit ? $amount : 0;
-                $expectedCredit = $isDebit ? 0 : $amount;
-
-                if (abs((float)$sLedger->debit - $expectedDebit) > 0.01 || abs((float)$sLedger->credit - $expectedCredit) > 0.01) {
-                    $sLedger->update([
-                        'debit' => $expectedDebit,
-                        'credit' => $expectedCredit,
-                    ]);
-                    $recalcNeeded = true;
-                }
-            }
-        }
-
-        if ($recalcNeeded) {
+        if ($deleted > 0) {
             VendorLedger::recalculateBalances($vendor->id);
         }
     }

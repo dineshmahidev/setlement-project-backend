@@ -26,6 +26,17 @@ class SettlementController extends Controller
     {
         $this->calcService = $calcService;
         $this->pdfService = $pdfService;
+
+        $this->middleware(function ($request, $next) {
+            $user = $request->user();
+            if ($user && ($user->isBranchManager() || $user->isStaff()) && ! $user->isSuperAdmin() && ! $user->isAdmin()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthorized: Branch Manager and Staff roles are restricted to the Inventory section only.',
+                ], 403);
+            }
+            return $next($request);
+        });
     }
 
     /**
@@ -44,8 +55,16 @@ class SettlementController extends Controller
 
     public function index(Request $request)
     {
-        // Settlements are isolated through their branch (which belongs to a company)
-        $query = $this->scopeBranches(Settlement::with(['branch.company', 'vendor', 'product', 'invoice', 'debitNotes', 'creator']));
+        $companyId = $this->activeCompanyId();
+        $query = Settlement::with(['branch.company', 'vendor', 'product', 'invoice', 'debitNotes', 'creator']);
+
+        if ($companyId) {
+            $query->whereHas('branch', function ($q) use ($companyId) {
+                $q->where('company_id', $companyId);
+            });
+        } else {
+            $this->scopeBranches($query);
+        }
 
         if ($request->filled('branch_id')) {
             $query->where('branch_id', $request->branch_id);
@@ -259,24 +278,6 @@ class SettlementController extends Controller
                 }
             }
 
-            // Post Settlement Bill to Vendor Ledger
-            $amount = $settlement->getDebitCreditAmount();
-            $isDebit = $settlement->isDebitNoteSettlement();
-
-            VendorLedger::postTransaction([
-                'vendor_id' => $settlement->vendor_id,
-                'branch_id' => $branchId,
-                'transaction_date' => $settlementDate,
-                'document_type' => 'settlement',
-                'document_id' => $settlement->id,
-                'document_number' => $settlement->settlement_number,
-                'lot_number' => $settlement->lot_number,
-                'description' => 'Settlement Bill #' . $settlement->settlement_number . ($settlement->bill_number ? ' (Bill #' . $settlement->bill_number . ')' : '') . ' - ' . number_format($settlement->final_weight_mt, 3) . ' MT',
-                'debit' => $isDebit ? $amount : 0,
-                'credit' => $isDebit ? 0 : $amount,
-                'created_by' => auth()->id(),
-            ]);
-
             AuditLog::logAction('created', 'Settlement', $settlement->id, $settlement->settlement_number, null, $settlement->toArray(), 'Settlement bill generated');
 
             return $settlement;
@@ -470,41 +471,11 @@ class SettlementController extends Controller
                 $existingNote->delete();
             }
 
-            // Sync Settlement Bill in Vendor Ledger
-            $amount = $settlement->getDebitCreditAmount();
-            $isDebit = $settlement->isDebitNoteSettlement();
-
-            $stLedger = VendorLedger::where('document_type', 'settlement')
+            // Remove any legacy duplicate settlement entries from vendor ledger
+            VendorLedger::where('document_type', 'settlement')
                 ->where('document_id', $settlement->id)
-                ->first();
-
-            if ($stLedger) {
-                $stLedger->update([
-                    'vendor_id' => $settlement->vendor_id,
-                    'branch_id' => $settlement->branch_id,
-                    'transaction_date' => $settlement->settlement_date,
-                    'document_number' => $settlement->settlement_number,
-                    'lot_number' => $settlement->lot_number,
-                    'description' => 'Settlement Bill #' . $settlement->settlement_number . ($settlement->bill_number ? ' (Bill #' . $settlement->bill_number . ')' : '') . ' - ' . number_format($settlement->final_weight_mt, 3) . ' MT',
-                    'debit' => $isDebit ? $amount : 0,
-                    'credit' => $isDebit ? 0 : $amount,
-                ]);
-                VendorLedger::recalculateBalances($settlement->vendor_id);
-            } else {
-                VendorLedger::postTransaction([
-                    'vendor_id' => $settlement->vendor_id,
-                    'branch_id' => $settlement->branch_id,
-                    'transaction_date' => $settlement->settlement_date,
-                    'document_type' => 'settlement',
-                    'document_id' => $settlement->id,
-                    'document_number' => $settlement->settlement_number,
-                    'lot_number' => $settlement->lot_number,
-                    'description' => 'Settlement Bill #' . $settlement->settlement_number . ($settlement->bill_number ? ' (Bill #' . $settlement->bill_number . ')' : '') . ' - ' . number_format($settlement->final_weight_mt, 3) . ' MT',
-                    'debit' => $isDebit ? $amount : 0,
-                    'credit' => $isDebit ? 0 : $amount,
-                    'created_by' => auth()->id(),
-                ]);
-            }
+                ->delete();
+            VendorLedger::recalculateBalances($settlement->vendor_id);
 
             AuditLog::logAction('updated', 'Settlement', $settlement->id, $settlement->settlement_number, $old, $settlement->toArray(), 'Settlement updated');
 
@@ -538,28 +509,10 @@ class SettlementController extends Controller
             $settlement->cancellation_reason = $request->cancellation_reason;
             $settlement->save();
 
-            // Reverse settlement bill in ledger if posted
-            $stLedger = VendorLedger::where('document_type', 'settlement')
+            // Remove legacy settlement entry from ledger if present
+            VendorLedger::where('document_type', 'settlement')
                 ->where('document_id', $settlement->id)
-                ->first();
-            if ($stLedger) {
-                $revDebit = (float)$stLedger->credit;
-                $revCredit = (float)$stLedger->debit;
-                if ($revDebit > 0 || $revCredit > 0) {
-                    VendorLedger::postTransaction([
-                        'vendor_id' => $settlement->vendor_id,
-                        'branch_id' => $settlement->branch_id,
-                        'transaction_date' => now()->toDateString(),
-                        'document_type' => 'settlement_cancellation',
-                        'document_id' => $settlement->id,
-                        'document_number' => $settlement->settlement_number,
-                        'lot_number' => $settlement->lot_number,
-                        'description' => 'Cancellation reversal of Settlement #' . $settlement->settlement_number,
-                        'debit' => $revDebit,
-                        'credit' => $revCredit,
-                    ]);
-                }
-            }
+                ->delete();
 
             // Cancel any linked debit notes
             foreach ($settlement->debitNotes as $dn) {

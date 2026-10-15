@@ -165,7 +165,6 @@
             </td>
             <td class="doc-badge">
                 <div class="doc-title">DISPATCH DELIVERY NOTE</div>
-                <div class="doc-status">{{ $outward->status }}</div>
             </td>
         </tr>
     </table>

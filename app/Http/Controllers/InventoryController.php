@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\InventoryTransaction;
+use App\Models\Item;
 use App\Models\StockTransfer;
 use App\Services\InventoryLedgerService;
 use App\Services\InventoryService;
@@ -52,60 +53,102 @@ class InventoryController extends Controller
         $branchId = $request->branch_id ? (int) $request->branch_id : null;
         $dateFrom = $request->date_from ?: null;
         $dateTo = $request->date_to ?: null;
-        $companyId = $this->activeCompanyId();
         $hideZero = $request->boolean('hide_zero');
 
-        if (! $branchId && $ids = $this->allowedBranchIds()) {
-            $all = $this->service->currentStock(null, $dateFrom, $dateTo, $companyId, false);
-            $filtered = [];
-            foreach ($all as $row) {
-                $inq = InventoryTransaction::where('item_id', $row['item_id'])
-                    ->whereIn('branch_id', $ids)->where('status', 'POSTED');
+        // Strictly scope to the active company's items matching ItemController::index()
+        $itemQuery = $this->scopeCompany(Item::query())
+            ->with(['unit', 'category'])
+            ->orderBy('name');
 
-                $periodInq = clone $inq;
-                if ($dateFrom) $periodInq->whereDate('date', '>=', $dateFrom);
-                if ($dateTo) $periodInq->whereDate('date', '<=', $dateTo);
-
-                $in = (clone $periodInq)->where('type', 'STOCK_IN')->sum('quantity')
-                    + (clone $periodInq)->where('type', 'TRANSFER_IN')->sum('quantity')
-                    + (clone $periodInq)->where('type', 'ADJUSTMENT_IN')->sum('quantity');
-                $out = (clone $periodInq)->where('type', 'STOCK_OUT')->sum('quantity')
-                    + (clone $periodInq)->where('type', 'TRANSFER_OUT')->sum('quantity')
-                    + (clone $periodInq)->where('type', 'ADJUSTMENT_OUT')->sum('quantity');
-
-                $cumInq = clone $inq;
-                if ($dateTo) $cumInq->whereDate('date', '<=', $dateTo);
-
-                $cumIn = (clone $cumInq)->where('type', 'STOCK_IN')->sum('quantity')
-                    + (clone $cumInq)->where('type', 'TRANSFER_IN')->sum('quantity')
-                    + (clone $cumInq)->where('type', 'ADJUSTMENT_IN')->sum('quantity');
-                $cumOut = (clone $cumInq)->where('type', 'STOCK_OUT')->sum('quantity')
-                    + (clone $cumInq)->where('type', 'TRANSFER_OUT')->sum('quantity')
-                    + (clone $cumInq)->where('type', 'ADJUSTMENT_OUT')->sum('quantity');
-
-                $avail = round((float) $cumIn - (float) $cumOut, 3);
-                $min = (float) $row['min_stock_level'];
-                $status = $avail <= 0 ? 'Out of Stock' : ($min > 0 && $avail <= $min ? 'Low Stock' : 'Normal');
-                $totIn = round((float)$in, 3);
-                $totOut = round((float)$out, 3);
-                $opening = round((float)$cumIn - (float)$cumOut - ((float)$in - (float)$out), 3);
-
-                if ($hideZero && abs($avail) < 0.0001 && abs($totIn) < 0.0001 && abs($totOut) < 0.0001 && abs($opening) < 0.0001) {
-                    continue;
-                }
-
-                $filtered[] = $row + [
-                    'available' => $avail,
-                    'total_in' => $totIn,
-                    'total_out' => $totOut,
-                    'opening' => $opening,
-                    'status' => $status
-                ];
-            }
-            return response()->json($filtered);
+        if ($request->filled('item_id')) {
+            $itemQuery->where('id', $request->item_id);
         }
 
-        return response()->json($this->service->currentStock($branchId, $dateFrom, $dateTo, $companyId, $hideZero));
+        $items = $itemQuery->get();
+        $allowedBranchIds = $branchId ? [$branchId] : $this->allowedBranchIds();
+
+        $rows = [];
+        foreach ($items as $item) {
+            $tx = InventoryTransaction::where('item_id', $item->id)->where('status', 'POSTED');
+            if ($branchId) {
+                $tx->where('branch_id', $branchId);
+            } elseif ($allowedBranchIds) {
+                $tx->whereIn('branch_id', $allowedBranchIds);
+            }
+
+            $inQ = clone $tx;
+            $outQ = clone $tx;
+
+            if ($dateFrom) {
+                $inQ->whereDate('date', '>=', $dateFrom);
+                $outQ->whereDate('date', '>=', $dateFrom);
+            }
+            if ($dateTo) {
+                $inQ->whereDate('date', '<=', $dateTo);
+                $outQ->whereDate('date', '<=', $dateTo);
+            }
+
+            $in = (clone $inQ)->where('type', 'STOCK_IN')->sum('quantity')
+                + (clone $inQ)->where('type', 'TRANSFER_IN')->sum('quantity')
+                + (clone $inQ)->where('type', 'ADJUSTMENT_IN')->sum('quantity');
+
+            $out = (clone $outQ)->where('type', 'STOCK_OUT')->sum('quantity')
+                + (clone $outQ)->where('type', 'TRANSFER_OUT')->sum('quantity')
+                + (clone $outQ)->where('type', 'ADJUSTMENT_OUT')->sum('quantity');
+
+            // Cumulative available stock as of dateTo (or all time if no dateTo)
+            $allTx = InventoryTransaction::where('item_id', $item->id)->where('status', 'POSTED');
+            if ($branchId) {
+                $allTx->where('branch_id', $branchId);
+            } elseif ($allowedBranchIds) {
+                $allTx->whereIn('branch_id', $allowedBranchIds);
+            }
+            if ($dateTo) {
+                $allTx->whereDate('date', '<=', $dateTo);
+            }
+
+            $cumIn = (clone $allTx)->where('type', 'STOCK_IN')->sum('quantity')
+                + (clone $allTx)->where('type', 'TRANSFER_IN')->sum('quantity')
+                + (clone $allTx)->where('type', 'ADJUSTMENT_IN')->sum('quantity');
+
+            $cumOut = (clone $allTx)->where('type', 'STOCK_OUT')->sum('quantity')
+                + (clone $allTx)->where('type', 'TRANSFER_OUT')->sum('quantity')
+                + (clone $allTx)->where('type', 'ADJUSTMENT_OUT')->sum('quantity');
+
+            $available = round((float) $cumIn - (float) $cumOut, 3);
+            $totIn = round((float) $in, 3);
+            $totOut = round((float) $out, 3);
+            $opening = round((float) $cumIn - (float) $cumOut - ((float) $in - (float) $out), 3);
+            $min = (float) $item->min_stock_level;
+
+            $status = 'Normal';
+            if ($available <= 0) {
+                $status = 'Out of Stock';
+            } elseif ($min > 0 && $available <= $min) {
+                $status = 'Low Stock';
+            }
+
+            if ($hideZero && abs($available) < 0.0001 && abs($totIn) < 0.0001 && abs($totOut) < 0.0001 && abs($opening) < 0.0001) {
+                continue;
+            }
+
+            $rows[] = [
+                'item_id' => $item->id,
+                'item_code' => $item->code,
+                'item_name' => $item->name,
+                'unit' => $item->unit?->code,
+                'category' => $item->category?->name,
+                'opening' => $opening,
+                'total_in' => $totIn,
+                'total_out' => $totOut,
+                'available' => $available,
+                'min_stock_level' => $min,
+                'max_stock_level' => (float) $item->max_stock_level,
+                'status' => $status,
+            ];
+        }
+
+        return response()->json($rows);
     }
 
     public function stockPdf(Request $request)
@@ -216,18 +259,18 @@ class InventoryController extends Controller
             if (!$partyName && $tx->party_id) {
                 $partyName = \App\Models\Vendor::whereKey($tx->party_id)->value('vendor_name');
             }
-            if (!$partyName && $tx->reference_type === 'OUTWARD' && $tx->reference_id) {
+            if (!$partyName && in_array($tx->reference_type, ['OUTWARD', 'OUTWARD_CANCEL']) && $tx->reference_id) {
                 $partyName = \App\Models\OutwardEntry::whereKey($tx->reference_id)->with('party')->first()?->party?->vendor_name;
             }
-            if (!$partyName && $tx->reference_type === 'INWARD' && $tx->reference_id) {
+            if (!$partyName && in_array($tx->reference_type, ['INWARD', 'INWARD_CANCEL']) && $tx->reference_id) {
                 $partyName = \App\Models\InwardEntry::whereKey($tx->reference_id)->with('party')->first()?->party?->vendor_name;
             }
 
             $vehicleNumber = $tx->vehicle?->number ?: $tx->vehicle?->vehicle_number;
-            if (!$vehicleNumber && $tx->reference_type === 'OUTWARD' && $tx->reference_id) {
+            if (!$vehicleNumber && in_array($tx->reference_type, ['OUTWARD', 'OUTWARD_CANCEL']) && $tx->reference_id) {
                 $vehicleNumber = \App\Models\OutwardEntry::whereKey($tx->reference_id)->value('vehicle_number');
             }
-            if (!$vehicleNumber && $tx->reference_type === 'INWARD' && $tx->reference_id) {
+            if (!$vehicleNumber && in_array($tx->reference_type, ['INWARD', 'INWARD_CANCEL']) && $tx->reference_id) {
                 $vehicleNumber = \App\Models\InwardEntry::whereKey($tx->reference_id)->value('vehicle_number');
             }
 
@@ -236,12 +279,16 @@ class InventoryController extends Controller
             if ($tx->type === 'ADJUSTMENT_IN') $inQty = round((float) $tx->quantity, 3);
             if ($tx->type === 'ADJUSTMENT_OUT') $outQty = round((float) $tx->quantity, 3);
 
+            $displayType = (in_array($tx->type, ['STOCK_IN', 'TRANSFER_IN', 'ADJUSTMENT_IN', 'OPENING', 'PRODUCTION_OUT']) || $inQty > 0)
+                ? 'STOCK_IN'
+                : 'STOCK_OUT';
+
             return [
                 'date' => $tx->date->toDateString(),
                 'lot' => $tx->lot_number ?: '—',
                 'party' => $partyName ?: '—',
                 'vendor_customer' => $partyName ?: '—',
-                'type' => $tx->type,
+                'type' => $displayType,
                 'in' => $inQty,
                 'out' => $outQty,
                 'stock_in' => $inQty,
@@ -320,18 +367,18 @@ class InventoryController extends Controller
             if (!$partyName && $tx->party_id) {
                 $partyName = \App\Models\Vendor::whereKey($tx->party_id)->value('vendor_name');
             }
-            if (!$partyName && $tx->reference_type === 'OUTWARD' && $tx->reference_id) {
+            if (!$partyName && in_array($tx->reference_type, ['OUTWARD', 'OUTWARD_CANCEL']) && $tx->reference_id) {
                 $partyName = \App\Models\OutwardEntry::whereKey($tx->reference_id)->with('party')->first()?->party?->vendor_name;
             }
-            if (!$partyName && $tx->reference_type === 'INWARD' && $tx->reference_id) {
+            if (!$partyName && in_array($tx->reference_type, ['INWARD', 'INWARD_CANCEL']) && $tx->reference_id) {
                 $partyName = \App\Models\InwardEntry::whereKey($tx->reference_id)->with('party')->first()?->party?->vendor_name;
             }
 
             $vehicleNumber = $tx->vehicle?->number ?: $tx->vehicle?->vehicle_number;
-            if (!$vehicleNumber && $tx->reference_type === 'OUTWARD' && $tx->reference_id) {
+            if (!$vehicleNumber && in_array($tx->reference_type, ['OUTWARD', 'OUTWARD_CANCEL']) && $tx->reference_id) {
                 $vehicleNumber = \App\Models\OutwardEntry::whereKey($tx->reference_id)->value('vehicle_number');
             }
-            if (!$vehicleNumber && $tx->reference_type === 'INWARD' && $tx->reference_id) {
+            if (!$vehicleNumber && in_array($tx->reference_type, ['INWARD', 'INWARD_CANCEL']) && $tx->reference_id) {
                 $vehicleNumber = \App\Models\InwardEntry::whereKey($tx->reference_id)->value('vehicle_number');
             }
 
@@ -344,12 +391,16 @@ class InventoryController extends Controller
             $totOut += $outQty;
             $latestClosingByKey[$key] = round($closing, 3);
 
+            $displayType = (in_array($tx->type, ['STOCK_IN', 'TRANSFER_IN', 'ADJUSTMENT_IN', 'OPENING', 'PRODUCTION_OUT']) || $inQty > 0)
+                ? 'STOCK_IN'
+                : 'STOCK_OUT';
+
             return [
                 'date' => $tx->date->toDateString(),
                 'lot' => $tx->lot_number ?: '—',
                 'party' => $partyName ?: '—',
                 'vendor_customer' => $partyName ?: '—',
-                'type' => $tx->type,
+                'type' => $displayType,
                 'in' => $inQty,
                 'out' => $outQty,
                 'stock_in' => $inQty,

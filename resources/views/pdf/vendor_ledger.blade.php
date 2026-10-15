@@ -193,7 +193,7 @@
             </td>
             <td style="width: 30%;">
                 <div class="info-label">Opening Balance</div>
-                <div class="info-val">₹ {{ number_format((float)$vendor->opening_balance, 2) }}</div>
+                <div class="info-val">Rs. {{ number_format((float)$vendor->opening_balance, 2) }}</div>
             </td>
         </tr>
     </table>
@@ -206,8 +206,8 @@
                 <th style="width: 90px;">Doc No</th>
                 <th style="width: 80px;">Type</th>
                 <th>Particulars / Narration</th>
-                <th style="width: 85px;" class="text-right">Debit (₹)</th>
-                <th style="width: 85px;" class="text-right">Credit (₹)</th>
+                <th style="width: 85px;" class="text-right">Debit (Rs.)</th>
+                <th style="width: 85px;" class="text-right">Credit (Rs.)</th>
             </tr>
         </thead>
         <tbody>
@@ -240,8 +240,8 @@
         <tfoot>
             <tr class="total-row">
                 <td colspan="5" class="text-right">STATEMENT TOTALS:</td>
-                <td class="text-right">₹ {{ number_format((float)$totalDebit, 2) }}</td>
-                <td class="text-right">₹ {{ number_format((float)$totalCredit, 2) }}</td>
+                <td class="text-right">Rs. {{ number_format((float)$totalDebit, 2) }}</td>
+                <td class="text-right">Rs. {{ number_format((float)$totalCredit, 2) }}</td>
             </tr>
         </tfoot>
     </table>

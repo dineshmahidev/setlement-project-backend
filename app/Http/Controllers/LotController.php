@@ -53,14 +53,34 @@ class LotController extends Controller
 
     public function show(Lot $lot)
     {
-        $lot->load(['item:id,code,name,material_type', 'item.unit:id,code,name', 'unit:id,code,name', 'grade:id,code,name', 'branch:id,branch_name,branch_code', 'company:id,company_name']);
+        $lot->load([
+            'item:id,code,name,material_type',
+            'item.unit:id,code,name',
+            'unit:id,code,name',
+            'grade:id,code,name',
+            'branch:id,branch_name,branch_code',
+            'company:id,company_name'
+        ]);
+
         $movements = \App\Models\InventoryTransaction::where('status', 'POSTED')
-            ->where('company_id', $lot->company_id)
+            ->where(function ($q) use ($lot) {
+                if ($lot->company_id) {
+                    $q->where('company_id', $lot->company_id);
+                }
+            })
             ->where('branch_id', $lot->branch_id)
             ->where('item_id', $lot->item_id)
             ->where('lot_number', $lot->lot_number)
             ->orderBy('date')->orderBy('id')->get();
 
-        return response()->json(['lot' => $lot, 'movements' => $movements]);
+        $lotData = $lot->toArray();
+        $lotData['lot'] = $lot;
+        $lotData['movements'] = $movements;
+
+        return response()->json([
+            'success' => true,
+            'data' => $lotData,
+            ...$lotData,
+        ]);
     }
 }

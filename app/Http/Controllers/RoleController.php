@@ -10,7 +10,23 @@ class RoleController extends Controller
 {
     public function index()
     {
-        $roles = Role::with('permissions')->get();
+        $query = Role::with('permissions');
+
+        // Normal admin cannot see or assign Super Admin role
+        if (! auth()->user()?->isSuperAdmin()) {
+            $query->whereNotIn('name', [
+                'super_admin',
+                'superadmin',
+                'Super Admin',
+                'SUPER ADMIN',
+                'master_admin',
+                'masteradmin',
+                'Master Admin',
+                'MASTER ADMIN',
+            ]);
+        }
+
+        $roles = $query->get();
         $permissions = Permission::all()->groupBy('module');
 
         return response()->json([

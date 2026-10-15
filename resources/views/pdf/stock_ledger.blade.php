@@ -258,6 +258,8 @@
                 @php
                     $inQty = (float)($r['in'] ?? $r['stock_in'] ?? 0);
                     $outQty = (float)($r['out'] ?? $r['stock_out'] ?? 0);
+                    $isInType = in_array($r['type'] ?? '', ['STOCK_IN', 'TRANSFER_IN', 'ADJUSTMENT_IN', 'OPENING', 'PRODUCTION_OUT']) || ($inQty > 0);
+                    $typeLabel = $isInType ? 'STOCK IN' : 'STOCK OUT';
                 @endphp
                 <tr>
                     <td class="text-center">{{ $idx + 1 }}</td>
@@ -265,7 +267,7 @@
                     <td style="font-family: monospace; font-weight: bold;">{{ $r['lot'] ?: '—' }}</td>
                     <td style="font-weight: 600;">{{ $r['party'] ?: ($r['vendor_customer'] ?: '—') }}</td>
                     <td style="font-weight: bold; color: #0b3558;">{{ $r['item'] ?: '—' }}</td>
-                    <td class="text-center" style="font-size: 7pt; text-transform: uppercase;">{{ str_replace('_', ' ', $r['type']) }}</td>
+                    <td class="text-center font-bold" style="font-size: 7.5pt; color: {{ $isInType ? '#047857' : '#b91c1c' }};">{{ $typeLabel }}</td>
                     <td class="text-right font-bold" style="color: #047857;">{{ $inQty > 0 ? number_format($inQty, 3) : '—' }}</td>
                     <td class="text-right font-bold" style="color: #b91c1c;">{{ $outQty > 0 ? number_format($outQty, 3) : '—' }}</td>
                     <td class="text-right font-bold" style="color: #0b3558;">{{ number_format((float)($r['closing_balance'] ?? 0), 3) }}</td>

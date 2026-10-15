@@ -133,6 +133,7 @@ Route::middleware(['auth:sanctum', 'company.scope'])->group(function () {
     });
 
     // Inward (multi-item stock receipt)
+    Route::get('/inward-report-pdf', [InwardController::class, 'reportPdf']);
     Route::get('/inward/{inward}/pdf', [InwardController::class, 'pdf']);
     Route::post('/inward/{inward}/confirm', [InwardController::class, 'confirm'])->middleware('permission:inventory.stock_in');
     Route::post('/inward/{inward}/cancel', [InwardController::class, 'cancel'])->middleware('permission:inventory.stock_in');
@@ -142,6 +143,7 @@ Route::middleware(['auth:sanctum', 'company.scope'])->group(function () {
     Route::post('/inward', [InwardController::class, 'store'])->middleware('permission:inventory.stock_in');
 
     // Outward / Dispatch (direct + mixed)
+    Route::get('/outward-report-pdf', [OutwardController::class, 'reportPdf']);
     Route::get('/outward/{outward}/pdf', [OutwardController::class, 'pdf']);
     Route::post('/outward/{outward}/confirm', [OutwardController::class, 'confirm'])->middleware('permission:inventory.stock_out');
     Route::post('/outward/{outward}/cancel', [OutwardController::class, 'cancel'])->middleware('permission:inventory.stock_out');
@@ -161,12 +163,14 @@ Route::middleware(['auth:sanctum', 'company.scope'])->group(function () {
     Route::get('/reports/{type}', [ReportController::class, 'index']);
     Route::get('/reports/{type}/export', [ReportController::class, 'export']);
 
-    // Confidential Modules - STRICTLY RESTRICTED TO SUPER ADMIN / MASTER ADMIN ONLY
-    Route::middleware('super_admin')->group(function () {
-        // User Management & Roles
+    // User Management & Roles (Accessible by Super Admin and Admin)
+    Route::middleware('admin_or_super')->group(function () {
         Route::apiResource('users', UserController::class);
         Route::get('/roles', [RoleController::class, 'index']);
+    });
 
+    // Confidential Modules - STRICTLY RESTRICTED TO SUPER ADMIN / MASTER ADMIN ONLY
+    Route::middleware('super_admin')->group(function () {
         // System Settings
         Route::get('/settings', [SettingController::class, 'index']);
         Route::put('/settings', [SettingController::class, 'update']);

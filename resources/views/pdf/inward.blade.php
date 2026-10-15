@@ -165,7 +165,6 @@
             </td>
             <td class="doc-badge">
                 <div class="doc-title">INWARD RECEIPT</div>
-                <div class="doc-status">{{ $inward->status }}</div>
             </td>
         </tr>
     </table>
