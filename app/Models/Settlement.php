@@ -163,4 +163,73 @@ class Settlement extends Model
     {
         return $this->belongsTo(User::class, 'approved_by');
     }
+
+    public function isDebitNoteSettlement(): bool
+    {
+        $noteType = strtolower($this->note_type ?? '');
+        if ($noteType === 'debit' || $noteType === 'dn') {
+            return true;
+        }
+        if ($noteType === 'credit' || $noteType === 'cn') {
+            return false;
+        }
+
+        $firstNote = $this->debitNotes()->first();
+        if ($firstNote) {
+            $txType = strtolower($firstNote->transaction_type ?? '');
+            if ($txType === 'debit' || str_starts_with($firstNote->debit_note_number, 'DN/')) {
+                return true;
+            }
+            if ($txType === 'credit' || str_starts_with($firstNote->debit_note_number, 'CN/')) {
+                return false;
+            }
+        }
+
+        $origInv = (float)($this->original_invoice_value ?? 0);
+        $branVal = (float)($this->bran_value ?? 0);
+        $manualAdj = (float)($this->manual_adjustment ?? 0);
+
+        if ($origInv > 0 || $manualAdj != 0) {
+            $diff = ($origInv > 0) ? (($origInv - $branVal) + $manualAdj) : $manualAdj;
+            if ($diff > 0.001) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public function getDebitCreditAmount(): float
+    {
+        $firstNote = $this->debitNotes()->first();
+        if ($firstNote) {
+            $tot = (float)$firstNote->total_amount;
+            if ($tot > 0) {
+                return $tot;
+            }
+            $tax = (float)$firstNote->taxable_amount;
+            if ($tax > 0) {
+                return $tax;
+            }
+        }
+
+        if ((float)$this->rebate_amount > 0) {
+            return (float)$this->rebate_amount;
+        }
+
+        $origInv = (float)($this->original_invoice_value ?? 0);
+        $branVal = (float)($this->bran_value ?? 0);
+        $manualAdj = (float)($this->manual_adjustment ?? 0);
+
+        if ($origInv > 0) {
+            $diff = abs(($origInv - $branVal) + $manualAdj);
+            if ($diff > 0.001) {
+                return $diff;
+            }
+        }
+
+        return max(0, (float)$this->net_payable > 0 
+            ? (float)$this->net_payable 
+            : ((float)$this->total_amount > 0 ? (float)$this->total_amount : (float)$this->bran_value));
+    }
 }

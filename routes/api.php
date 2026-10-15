@@ -106,6 +106,7 @@ Route::middleware(['auth:sanctum', 'company.scope'])->group(function () {
 
     // Inventory Dashboard & Transactions
     Route::get('/inventory/party-summary', [InventoryController::class, 'partySummary']);
+    Route::get('/inventory/party-summary/pdf', [InventoryController::class, 'partySummaryPdf']);
     Route::get('/inventory/stock', [InventoryController::class, 'stock']);
     Route::get('/inventory/stock/pdf', [InventoryController::class, 'stockPdf']);
     Route::get('/inventory/ledger', [InventoryController::class, 'ledger']);
@@ -114,6 +115,8 @@ Route::middleware(['auth:sanctum', 'company.scope'])->group(function () {
     Route::get('/inventory/dashboard-kpis', [InventoryController::class, 'dashboardKpis']);
     Route::post('/inventory/stock-in', [InventoryController::class, 'stockIn']);
     Route::post('/inventory/stock-out', [InventoryController::class, 'stockOut']);
+    Route::get('/inventory/transfers', [InventoryController::class, 'transfers']);
+    Route::get('/inventory/transfers/pdf', [InventoryController::class, 'transfersPdf']);
     Route::post('/inventory/transfer', [InventoryController::class, 'transfer']);
     Route::post('/inventory/transfer-lot', [InventoryController::class, 'transferLot'])->middleware('permission:inventory.transfer');
     Route::post('/inventory/adjustment', [InventoryController::class, 'adjustment']);

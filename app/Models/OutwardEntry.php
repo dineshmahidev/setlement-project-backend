@@ -9,7 +9,7 @@ class OutwardEntry extends Model
 {
     use SoftDeletes;
     protected $fillable = [
-        'entry_number', 'company_id', 'branch_id', 'party_id', 'date',
+        'entry_number', 'bill_no', 'company_id', 'branch_id', 'party_id', 'date',
         'dispatch_type', 'vehicle_number', 'driver_name', 'driver_mobile',
         'destination', 'total_amount', 'is_sale', 'payment_status',
         'status', 'notes', 'created_by', 'confirmed_by', 'confirmed_at',

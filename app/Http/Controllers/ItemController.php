@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Item;
 use App\Services\AuditService;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class ItemController extends Controller
 {
@@ -30,7 +31,14 @@ class ItemController extends Controller
     {
         $companyId = $this->activeCompanyId();
         $data = $request->validate([
-            'code' => ['nullable', 'string', 'max:30', 'unique:items,code,NULL,id,company_id,'.($companyId ?? 'NULL')],
+            'code' => [
+                'nullable',
+                'string',
+                'max:30',
+                Rule::unique('items', 'code')
+                    ->where(fn ($q) => $companyId ? $q->where('company_id', $companyId) : $q->whereNull('company_id'))
+                    ->whereNull('deleted_at'),
+            ],
             'name' => ['required', 'string', 'max:200'],
             'material_type' => ['nullable', 'string', 'max:30'],
             'default_oil_pct' => ['nullable', 'numeric', 'min:0', 'max:100'],
@@ -71,7 +79,15 @@ class ItemController extends Controller
         $this->guardCompanyOwnership($item);
 
         $data = $request->validate([
-            'code' => ['nullable', 'string', 'max:30', 'unique:items,code,'.$item->id.',id,company_id,'.($item->company_id ?? 'NULL')],
+            'code' => [
+                'nullable',
+                'string',
+                'max:30',
+                Rule::unique('items', 'code')
+                    ->ignore($item->id)
+                    ->where(fn ($q) => $item->company_id ? $q->where('company_id', $item->company_id) : $q->whereNull('company_id'))
+                    ->whereNull('deleted_at'),
+            ],
             'name' => ['sometimes', 'string', 'max:200'],
             'material_type' => ['nullable', 'string', 'max:30'],
             'default_oil_pct' => ['nullable', 'numeric', 'min:0', 'max:100'],
@@ -97,8 +113,74 @@ class ItemController extends Controller
     {
         $this->guardCompanyOwnership($item);
 
-        $this->audit->log('ARCHIVE', 'Item', $item->id, $item->toArray(), ['status' => 'INACTIVE']);
-        $item->update(['status' => 'INACTIVE']);
-        return response()->json(['message' => 'Item archived']);
+        $mappedReasons = [];
+
+        $inwardCount = \App\Models\InwardItem::where('item_id', $item->id)->count();
+        if ($inwardCount > 0) {
+            $mappedReasons[] = "{$inwardCount} Inward entry item(s)";
+        }
+
+        $outwardCount = \App\Models\OutwardItem::where('item_id', $item->id)->count();
+        if ($outwardCount > 0) {
+            $mappedReasons[] = "{$outwardCount} Outward entry item(s)";
+        }
+
+        $txCount = \App\Models\InventoryTransaction::where('item_id', $item->id)->count();
+        if ($txCount > 0) {
+            $mappedReasons[] = "{$txCount} Stock/Inventory transaction(s)";
+        }
+
+        $lotCount = \App\Models\Lot::where('item_id', $item->id)->count();
+        if ($lotCount > 0) {
+            $mappedReasons[] = "{$lotCount} Lot(s)";
+        }
+
+        $transferCount = \App\Models\StockTransfer::where('item_id', $item->id)->count();
+        if ($transferCount > 0) {
+            $mappedReasons[] = "{$transferCount} Stock transfer(s)";
+        }
+
+        $adjCount = \App\Models\StockAdjustment::where('item_id', $item->id)->count();
+        if ($adjCount > 0) {
+            $mappedReasons[] = "{$adjCount} Stock adjustment(s)";
+        }
+
+        $prodBatchCount = \App\Models\ProductionBatch::where('output_item_id', $item->id)->count();
+        if ($prodBatchCount > 0) {
+            $mappedReasons[] = "{$prodBatchCount} Production batch output(s)";
+        }
+
+        $prodInputCount = \App\Models\ProductionInput::where('item_id', $item->id)->count();
+        if ($prodInputCount > 0) {
+            $mappedReasons[] = "{$prodInputCount} Production input(s)";
+        }
+
+        $prodOutputCount = \App\Models\ProductionOutput::where('item_id', $item->id)->count();
+        if ($prodOutputCount > 0) {
+            $mappedReasons[] = "{$prodOutputCount} Production output(s)";
+        }
+
+        $vehCount = \App\Models\VehicleMovement::where('item_id', $item->id)->count();
+        if ($vehCount > 0) {
+            $mappedReasons[] = "{$vehCount} Vehicle movement(s)";
+        }
+
+        if (!empty($mappedReasons)) {
+            $details = implode(', ', $mappedReasons);
+            return response()->json([
+                'success' => false,
+                'message' => "Cannot delete item \"{$item->name}\": It is currently mapped to {$details}. Please manually delete or remove these mapped records first before deleting this item.",
+                'mapped_records' => $mappedReasons,
+            ], 422);
+        }
+
+        $old = $item->toArray();
+        $this->audit->log('DELETE', 'Item', $item->id, $old, null);
+        $item->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => "Item \"{$item->name}\" deleted successfully",
+        ]);
     }
 }

@@ -163,7 +163,7 @@
                 </table>
             </td>
             <td class="doc-badge">
-                <div class="doc-title">PARTY LEDGER STATEMENT</div>
+                <div class="doc-title">LEDGER STATEMENT</div>
                 <div class="doc-period">
                     @if(!empty($fromDate) && !empty($toDate))
                         {{ \Carbon\Carbon::parse($fromDate)->format('d-m-Y') }} to {{ \Carbon\Carbon::parse($toDate)->format('d-m-Y') }}
@@ -187,17 +187,13 @@
                 @if($vendor->contact_person)<div style="font-size: 6.5pt; color: #64748b;">Attn: {{ $vendor->contact_person }}</div>@endif
                 @if($vendor->phone)<div style="font-size: 6.5pt; color: #64748b;">Mob: {{ $vendor->phone }}@if($vendor->phone_2) / {{ $vendor->phone_2 }}@endif</div>@endif
             </td>
-            <td style="width: 25%;">
+            <td style="width: 35%;">
                 <div class="info-label">GSTIN / PAN</div>
                 <div class="info-val">{{ $vendor->gstin ?: '—' }} / {{ $vendor->pan ?: '—' }}</div>
             </td>
-            <td style="width: 20%;">
+            <td style="width: 30%;">
                 <div class="info-label">Opening Balance</div>
                 <div class="info-val">₹ {{ number_format((float)$vendor->opening_balance, 2) }}</div>
-            </td>
-            <td style="width: 20%;">
-                <div class="info-label">Closing Balance</div>
-                <div class="info-val" style="color: #0b3558;">₹ {{ number_format((float)$closingBalance, 2) }}</div>
             </td>
         </tr>
     </table>
@@ -206,13 +202,12 @@
         <thead>
             <tr>
                 <th style="width: 30px;" class="text-center">#</th>
-                <th style="width: 65px;">Date</th>
-                <th style="width: 85px;">Doc No</th>
-                <th style="width: 75px;">Type</th>
+                <th style="width: 70px;">Date</th>
+                <th style="width: 90px;">Doc No</th>
+                <th style="width: 80px;">Type</th>
                 <th>Particulars / Narration</th>
-                <th style="width: 75px;" class="text-right">Debit (₹)</th>
-                <th style="width: 75px;" class="text-right">Credit (₹)</th>
-                <th style="width: 85px;" class="text-right">Balance (₹)</th>
+                <th style="width: 85px;" class="text-right">Debit (₹)</th>
+                <th style="width: 85px;" class="text-right">Credit (₹)</th>
             </tr>
         </thead>
         <tbody>
@@ -220,24 +215,23 @@
                 @php
                     $d = (float)$e->debit;
                     $c = (float)$e->credit;
-                    $b = (float)$e->balance;
+                    $typeLabel = ($d > 0) ? 'DEBIT NOTE' : 'CREDIT NOTE';
                 @endphp
                 <tr>
                     <td class="text-center">{{ $idx + 1 }}</td>
                     <td>{{ \Carbon\Carbon::parse($e->transaction_date)->format('d-m-Y') }}</td>
                     <td style="font-weight: bold; font-family: monospace;">{{ $e->document_number ?: '—' }}</td>
-                    <td><span style="font-size: 6.5pt; text-transform: uppercase;">{{ str_replace('_', ' ', $e->document_type) }}</span></td>
+                    <td><span style="font-size: 6.5pt; text-transform: uppercase; font-weight: bold;">{{ $typeLabel }}</span></td>
                     <td>
                         {{ $e->description ?: '—' }}
                         @if($e->lot_number)<span style="color: #64748b; font-size: 6.5pt;"> (Lot: {{ $e->lot_number }})</span>@endif
                     </td>
                     <td class="text-right">{{ $d > 0 ? number_format($d, 2) : '—' }}</td>
                     <td class="text-right">{{ $c > 0 ? number_format($c, 2) : '—' }}</td>
-                    <td class="text-right" style="font-weight: bold;">₹ {{ number_format($b, 2) }}</td>
                 </tr>
             @empty
                 <tr>
-                    <td colspan="8" class="text-center" style="padding: 15px; color: #64748b;">
+                    <td colspan="7" class="text-center" style="padding: 15px; color: #64748b;">
                         No transactions found for the selected period.
                     </td>
                 </tr>
@@ -248,7 +242,6 @@
                 <td colspan="5" class="text-right">STATEMENT TOTALS:</td>
                 <td class="text-right">₹ {{ number_format((float)$totalDebit, 2) }}</td>
                 <td class="text-right">₹ {{ number_format((float)$totalCredit, 2) }}</td>
-                <td class="text-right">₹ {{ number_format((float)$closingBalance, 2) }}</td>
             </tr>
         </tfoot>
     </table>

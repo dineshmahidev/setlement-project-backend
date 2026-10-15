@@ -45,7 +45,7 @@ class SettlementController extends Controller
     public function index(Request $request)
     {
         // Settlements are isolated through their branch (which belongs to a company)
-        $query = $this->scopeBranches(Settlement::with(['branch.company', 'vendor', 'product', 'invoice', 'creator']));
+        $query = $this->scopeBranches(Settlement::with(['branch.company', 'vendor', 'product', 'invoice', 'debitNotes', 'creator']));
 
         if ($request->filled('branch_id')) {
             $query->where('branch_id', $request->branch_id);
@@ -259,6 +259,24 @@ class SettlementController extends Controller
                 }
             }
 
+            // Post Settlement Bill to Vendor Ledger
+            $amount = $settlement->getDebitCreditAmount();
+            $isDebit = $settlement->isDebitNoteSettlement();
+
+            VendorLedger::postTransaction([
+                'vendor_id' => $settlement->vendor_id,
+                'branch_id' => $branchId,
+                'transaction_date' => $settlementDate,
+                'document_type' => 'settlement',
+                'document_id' => $settlement->id,
+                'document_number' => $settlement->settlement_number,
+                'lot_number' => $settlement->lot_number,
+                'description' => 'Settlement Bill #' . $settlement->settlement_number . ($settlement->bill_number ? ' (Bill #' . $settlement->bill_number . ')' : '') . ' - ' . number_format($settlement->final_weight_mt, 3) . ' MT',
+                'debit' => $isDebit ? $amount : 0,
+                'credit' => $isDebit ? 0 : $amount,
+                'created_by' => auth()->id(),
+            ]);
+
             AuditLog::logAction('created', 'Settlement', $settlement->id, $settlement->settlement_number, null, $settlement->toArray(), 'Settlement bill generated');
 
             return $settlement;
@@ -276,6 +294,31 @@ class SettlementController extends Controller
         $this->guardBranchOwnership($settlement);
 
         $settlement->load(['branch.company', 'vendor', 'product', 'invoice', 'debitNotes.items', 'qualityTests', 'charges', 'creator']);
+
+        $origInv = (float)($settlement->original_invoice_value ?? 0);
+        $branVal = (float)($settlement->bran_value ?? 0);
+        $manualAdj = (float)($settlement->manual_adjustment ?? 0);
+        if ($origInv > 0 || $manualAdj != 0) {
+            $diff = ($origInv > 0) ? (($origInv - $branVal) + $manualAdj) : $manualAdj;
+            $correctType = ($diff < -0.001) ? 'credit' : 'debit';
+            $dn = $settlement->debitNotes->first();
+            if ($dn && ($dn->transaction_type !== $correctType || ($correctType === 'credit' && str_starts_with($dn->debit_note_number, 'DN/')))) {
+                $newNumber = $dn->debit_note_number;
+                if ($correctType === 'credit' && str_starts_with($newNumber, 'DN/')) {
+                    $newNumber = 'CN/' . substr($newNumber, 3);
+                } elseif ($correctType === 'debit' && str_starts_with($newNumber, 'CN/')) {
+                    $newNumber = 'DN/' . substr($newNumber, 3);
+                }
+                $dn->update([
+                    'transaction_type' => $correctType,
+                    'debit_note_number' => $newNumber,
+                    'reason' => ($correctType === 'credit')
+                        ? 'Quality Premium / Price Credit on Oil Content Settlement'
+                        : 'Rebate on Oil Content Settlement',
+                ]);
+                $dn->fill(['transaction_type' => $correctType, 'debit_note_number' => $newNumber]);
+            }
+        }
 
         return response()->json([
             'success' => true,
@@ -352,6 +395,117 @@ class SettlementController extends Controller
                 }
             }
 
+            // Sync Debit/Credit note on update
+            $noteAmount = $calc['rebate_amount'] ?? ($calc['note_amount'] ?? 0);
+            $noteType = $calc['note_type'] ?? 'debit';
+            $existingNote = DebitNote::where('settlement_id', $settlement->id)->first();
+
+            if ($noteAmount > 0) {
+                $docType = ($noteType === 'credit') ? 'credit_note' : 'debit_note';
+                $dnData = $calc['debit_note'];
+                $reason = ($noteType === 'credit')
+                    ? 'Quality Premium / Price Credit on Oil Content Settlement'
+                    : 'Rebate on Oil Content Settlement';
+
+                if ($existingNote) {
+                    $existingNote->update([
+                        'transaction_type' => $noteType,
+                        'taxable_amount' => $dnData['taxable_amount'],
+                        'cgst_amount' => $dnData['cgst_amount'],
+                        'sgst_amount' => $dnData['sgst_amount'],
+                        'igst_amount' => $dnData['igst_amount'],
+                        'total_amount' => $dnData['total_amount'],
+                        'reason' => $reason,
+                        'remarks' => 'Auto generated ' . strtoupper($noteType) . ' Note from Settlement ' . $settlement->settlement_number,
+                    ]);
+
+                    DebitNoteItem::where('debit_note_id', $existingNote->id)->update([
+                        'particulars' => ($noteType === 'credit')
+                            ? 'Quality bonus / excess rate difference between settlement and bill'
+                            : 'Rebate difference between Invoice value and final Settlement bran value',
+                        'amount' => $dnData['taxable_amount'],
+                    ]);
+                } else {
+                    $branchId = $settlement->branch_id;
+                    $settlementDate = $settlement->settlement_date;
+                    $fy = $settlement->financial_year ?: FinancialYear::getFinancialYearForDate($settlementDate);
+                    $dnNumber = DocumentSequence::getNextNumber($docType, $branchId, $settlementDate);
+
+                    $newNote = DebitNote::create([
+                        'debit_note_number' => $dnNumber,
+                        'financial_year' => $fy,
+                        'branch_id' => $branchId,
+                        'vendor_id' => $settlement->vendor_id,
+                        'settlement_id' => $settlement->id,
+                        'invoice_id' => $settlement->invoice_id,
+                        'invoice_number' => $settlement->bill_number,
+                        'invoice_date' => $settlement->bill_date,
+                        'lot_number' => $settlement->lot_number,
+                        'date' => $settlementDate,
+                        'reason' => $reason,
+                        'transaction_type' => $noteType,
+                        'taxable_amount' => $dnData['taxable_amount'],
+                        'is_interstate' => $calc['is_interstate'],
+                        'cgst_rate' => $dnData['cgst_rate'],
+                        'sgst_rate' => $dnData['sgst_rate'],
+                        'igst_rate' => $dnData['igst_rate'],
+                        'cgst_amount' => $dnData['cgst_amount'],
+                        'sgst_amount' => $dnData['sgst_amount'],
+                        'igst_amount' => $dnData['igst_amount'],
+                        'total_amount' => $dnData['total_amount'],
+                        'status' => 'approved',
+                        'remarks' => 'Auto generated ' . strtoupper($noteType) . ' Note from Settlement ' . $settlement->settlement_number,
+                        'created_by' => auth()->id(),
+                    ]);
+
+                    DebitNoteItem::create([
+                        'debit_note_id' => $newNote->id,
+                        'particulars' => ($noteType === 'credit')
+                            ? 'Quality bonus / excess rate difference between settlement and bill'
+                            : 'Rebate difference between Invoice value and final Settlement bran value',
+                        'amount' => $dnData['taxable_amount'],
+                    ]);
+                }
+            } elseif ($existingNote) {
+                $existingNote->delete();
+            }
+
+            // Sync Settlement Bill in Vendor Ledger
+            $amount = $settlement->getDebitCreditAmount();
+            $isDebit = $settlement->isDebitNoteSettlement();
+
+            $stLedger = VendorLedger::where('document_type', 'settlement')
+                ->where('document_id', $settlement->id)
+                ->first();
+
+            if ($stLedger) {
+                $stLedger->update([
+                    'vendor_id' => $settlement->vendor_id,
+                    'branch_id' => $settlement->branch_id,
+                    'transaction_date' => $settlement->settlement_date,
+                    'document_number' => $settlement->settlement_number,
+                    'lot_number' => $settlement->lot_number,
+                    'description' => 'Settlement Bill #' . $settlement->settlement_number . ($settlement->bill_number ? ' (Bill #' . $settlement->bill_number . ')' : '') . ' - ' . number_format($settlement->final_weight_mt, 3) . ' MT',
+                    'debit' => $isDebit ? $amount : 0,
+                    'credit' => $isDebit ? 0 : $amount,
+                ]);
+                VendorLedger::recalculateBalances($settlement->vendor_id);
+            } else {
+                VendorLedger::postTransaction([
+                    'vendor_id' => $settlement->vendor_id,
+                    'branch_id' => $settlement->branch_id,
+                    'transaction_date' => $settlement->settlement_date,
+                    'document_type' => 'settlement',
+                    'document_id' => $settlement->id,
+                    'document_number' => $settlement->settlement_number,
+                    'lot_number' => $settlement->lot_number,
+                    'description' => 'Settlement Bill #' . $settlement->settlement_number . ($settlement->bill_number ? ' (Bill #' . $settlement->bill_number . ')' : '') . ' - ' . number_format($settlement->final_weight_mt, 3) . ' MT',
+                    'debit' => $isDebit ? $amount : 0,
+                    'credit' => $isDebit ? 0 : $amount,
+                    'created_by' => auth()->id(),
+                ]);
+            }
+
             AuditLog::logAction('updated', 'Settlement', $settlement->id, $settlement->settlement_number, $old, $settlement->toArray(), 'Settlement updated');
 
             return $settlement;
@@ -383,6 +537,29 @@ class SettlementController extends Controller
             $settlement->status = 'cancelled';
             $settlement->cancellation_reason = $request->cancellation_reason;
             $settlement->save();
+
+            // Reverse settlement bill in ledger if posted
+            $stLedger = VendorLedger::where('document_type', 'settlement')
+                ->where('document_id', $settlement->id)
+                ->first();
+            if ($stLedger) {
+                $revDebit = (float)$stLedger->credit;
+                $revCredit = (float)$stLedger->debit;
+                if ($revDebit > 0 || $revCredit > 0) {
+                    VendorLedger::postTransaction([
+                        'vendor_id' => $settlement->vendor_id,
+                        'branch_id' => $settlement->branch_id,
+                        'transaction_date' => now()->toDateString(),
+                        'document_type' => 'settlement_cancellation',
+                        'document_id' => $settlement->id,
+                        'document_number' => $settlement->settlement_number,
+                        'lot_number' => $settlement->lot_number,
+                        'description' => 'Cancellation reversal of Settlement #' . $settlement->settlement_number,
+                        'debit' => $revDebit,
+                        'credit' => $revCredit,
+                    ]);
+                }
+            }
 
             // Cancel any linked debit notes
             foreach ($settlement->debitNotes as $dn) {
@@ -430,11 +607,38 @@ class SettlementController extends Controller
     public function destroy(Settlement $settlement)
     {
         $this->guardBranchOwnership($settlement);
-        $settlement->delete();
-        AuditLog::logAction('deleted', 'Settlement', $settlement->id, $settlement->settlement_number, null, null, 'Settlement moved to trash');
+        $vendorId = $settlement->vendor_id;
+
+        DB::transaction(function () use ($settlement, $vendorId) {
+            // Delete linked debit notes and their ledger postings
+            foreach ($settlement->debitNotes as $dn) {
+                VendorLedger::whereIn('document_type', ['debit_note', 'credit_note', 'debit_note_reversal'])
+                    ->where('document_id', $dn->id)
+                    ->delete();
+                $dn->items()->delete();
+                $dn->delete();
+            }
+
+            // Delete settlement bill ledger entries
+            VendorLedger::whereIn('document_type', ['settlement', 'settlement_cancellation'])
+                ->where('document_id', $settlement->id)
+                ->delete();
+
+            // Delete quality tests and charges
+            $settlement->qualityTests()->delete();
+            $settlement->charges()->delete();
+
+            $settlement->delete();
+
+            // Recalculate vendor balance
+            VendorLedger::recalculateBalances($vendorId);
+        });
+
+        AuditLog::logAction('deleted', 'Settlement', $settlement->id, $settlement->settlement_number, null, null, 'Settlement deleted');
+
         return response()->json([
             'success' => true,
-            'message' => 'Settlement moved to trash successfully',
+            'message' => 'Settlement bill deleted successfully',
         ]);
     }
 }

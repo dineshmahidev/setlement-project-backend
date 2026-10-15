@@ -65,6 +65,32 @@ class DashboardController extends Controller
         $todaySettlementsCount = (clone $todaySettlementQuery)->count();
         $todaySettlementValue = (clone $todaySettlementQuery)->sum('net_payable');
 
+        // Total settlements in date range
+        $periodSettlementQuery = Settlement::where('status', '!=', 'cancelled')
+            ->whereBetween('settlement_date', [$startDate, $endDate]);
+        $applyBranch($periodSettlementQuery, 'branch_id');
+        $totalSettlementsCount = (clone $periodSettlementQuery)->count();
+        $totalSettlementsValue = (clone $periodSettlementQuery)->sum('net_payable');
+
+        // Total debit notes in date range
+        $debitQuery = DebitNote::where('status', '!=', 'cancelled')
+            ->where(function ($q) {
+                $q->where('transaction_type', 'debit')
+                  ->orWhereNull('transaction_type');
+            })
+            ->whereBetween('date', [$startDate, $endDate]);
+        $applyBranch($debitQuery, 'branch_id');
+        $totalDebitCount = (clone $debitQuery)->count();
+        $totalDebitValue = (clone $debitQuery)->sum('total_amount');
+
+        // Total credit notes in date range
+        $creditQuery = DebitNote::where('status', '!=', 'cancelled')
+            ->where('transaction_type', 'credit')
+            ->whereBetween('date', [$startDate, $endDate]);
+        $applyBranch($creditQuery, 'branch_id');
+        $totalCreditCount = (clone $creditQuery)->count();
+        $totalCreditValue = (clone $creditQuery)->sum('total_amount');
+
         $debitNoteQuery = DebitNote::where('status', 'draft');
         $applyBranch($debitNoteQuery, 'branch_id');
         $pendingDebitNotesCount = $debitNoteQuery->count();
@@ -155,6 +181,12 @@ class DashboardController extends Controller
                     'total_branches' => $totalBranches,
                     'today_settlements' => $todaySettlementsCount,
                     'today_settlement_value' => $todaySettlementValue,
+                    'total_settlements' => $totalSettlementsCount,
+                    'total_settlement_value' => $totalSettlementsValue,
+                    'total_debit_count' => $totalDebitCount,
+                    'total_debit_value' => $totalDebitValue,
+                    'total_credit_count' => $totalCreditCount,
+                    'total_credit_value' => $totalCreditValue,
                     'pending_debit_notes' => $pendingDebitNotesCount,
                     'total_payable' => $totalPayable,
                     'total_receivable' => $totalReceivable,

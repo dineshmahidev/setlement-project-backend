@@ -59,6 +59,7 @@ class SettlementRequest extends FormRequest
             
             // Rebate & Invoicing
             'original_invoice_value' => ['nullable', 'numeric', 'min:0'],
+            'note_type' => ['nullable', 'string', 'in:debit,credit'],
             'manual_adjustment' => ['nullable', 'numeric'],
             'manual_adjustment_reason' => ['nullable', 'string'],
             

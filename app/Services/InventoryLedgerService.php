@@ -137,6 +137,7 @@ class InventoryLedgerService
                         'stock_value' => round($newVal, 2),
                         'oil_pct' => $it->oil_pct ?? $lot->oil_pct,
                         'grade_id' => $gradeId ?? $lot->grade_id,
+                        'unit_id' => $it->unit_id ?: $lot->unit_id,
                     ]);
                 } else {
                     $lot = Lot::create([
@@ -150,7 +151,7 @@ class InventoryLedgerService
                         'received_qty' => $qty,
                         'issued_qty' => 0,
                         'available_qty' => $qty,
-                        'unit_id' => $it->unit_id,
+                        'unit_id' => $it->unit_id ?: $it->item?->unit_id,
                         'unit_cost' => $unitCost,
                         'stock_value' => round($amount, 2),
                         'source' => 'INWARD',
@@ -336,7 +337,7 @@ class InventoryLedgerService
                     'type' => 'STOCK_OUT',
                     'quantity' => $qty,
                     'signed_quantity' => -$qty,
-                    'unit_id' => $it->unit_id,
+                    'unit_id' => $it->unit_id ?: ($it->lot?->unit_id ?: $it->item?->unit_id),
                     'oil_pct' => $it->oil_pct,
                     'grade_id' => $gradeId,
                     'lot_number' => $lotNo,

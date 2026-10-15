@@ -14,7 +14,7 @@ class OutwardController extends Controller
     public function index(Request $request)
     {
         $companyId = $this->activeCompanyId();
-        $q = OutwardEntry::with(['party:id,vendor_name,vendor_code', 'branch:id,branch_name,branch_code', 'items.item:id,code,name'])
+        $q = OutwardEntry::with(['party:id,vendor_name,vendor_code', 'branch:id,branch_name,branch_code', 'items.item:id,code,name', 'items.unit:id,code,name', 'items.lot:id,lot_number'])
             ->orderByDesc('id');
         if ($companyId) $q->where('company_id', $companyId);
         else $this->scopeBranches($q, 'branch_id');
@@ -27,7 +27,9 @@ class OutwardController extends Controller
         if ($request->filled('to_date')) $q->whereDate('date', '<=', $request->to_date);
         if ($request->filled('search')) {
             $s = $request->search;
-            $q->where(fn ($qq) => $qq->where('entry_number', 'like', "%$s%")->orWhere('vehicle_number', 'like', "%$s%"));
+            $q->where(fn ($qq) => $qq->where('entry_number', 'like', "%$s%")
+                ->orWhere('bill_no', 'like', "%$s%")
+                ->orWhere('vehicle_number', 'like', "%$s%"));
         }
 
         return response()->json($q->paginate($request->get('per_page', 15)));
@@ -36,6 +38,7 @@ class OutwardController extends Controller
     public function store(Request $request)
     {
         $data = $request->validate([
+            'bill_no' => 'nullable|string|max:100',
             'branch_id' => 'required|exists:branches,id',
             'party_id' => 'nullable|exists:vendors,id',
             'date' => 'required|date',
@@ -69,6 +72,29 @@ class OutwardController extends Controller
             $total = 0;
             $items = [];
             foreach ($data['items'] as $i) {
+                // If unit_id is missing, auto-pick from lot (fixed in inward) or item master
+                if (empty($i['unit_id'])) {
+                    if (!empty($i['lot_id'])) {
+                        $i['unit_id'] = \App\Models\Lot::whereKey($i['lot_id'])->value('unit_id');
+                    }
+                    if (empty($i['unit_id']) && !empty($i['item_id'])) {
+                        $i['unit_id'] = \App\Models\Item::whereKey($i['item_id'])->value('unit_id');
+                    }
+                }
+                // If rate is missing, auto-pick from lot unit_cost
+                if ((!isset($i['rate']) || $i['rate'] === '' || (float)$i['rate'] == 0) && !empty($i['lot_id'])) {
+                    $lotCost = \App\Models\Lot::whereKey($i['lot_id'])->value('unit_cost');
+                    if ($lotCost) {
+                        $i['rate'] = (float) $lotCost;
+                    }
+                }
+                // If oil_pct is missing, auto-pick from lot (from inward)
+                if ((!isset($i['oil_pct']) || $i['oil_pct'] === '' || $i['oil_pct'] === null) && !empty($i['lot_id'])) {
+                    $lotOil = \App\Models\Lot::whereKey($i['lot_id'])->value('oil_pct');
+                    if ($lotOil !== null) {
+                        $i['oil_pct'] = (float) $lotOil;
+                    }
+                }
                 $amount = round(((float) $i['quantity']) * ((float) ($i['rate'] ?? 0)) - ((float) ($i['discount'] ?? 0)) + ((float) ($i['additional_charges'] ?? 0)), 2);
                 $total += $amount;
                 $items[] = $i + ['amount' => $amount];
@@ -76,6 +102,7 @@ class OutwardController extends Controller
 
             $entry = OutwardEntry::create([
                 'entry_number' => $entryNumber,
+                'bill_no' => $data['bill_no'] ?? null,
                 'company_id' => $companyId,
                 'branch_id' => $data['branch_id'],
                 'party_id' => $data['party_id'] ?? null,
@@ -108,12 +135,12 @@ class OutwardController extends Controller
             throw $e;
         }
 
-        return response()->json($entry->load(['items.item:id,code,name', 'items.lot:id,lot_number', 'party:id,vendor_name', 'branch:id,branch_name']), 201);
+        return response()->json($entry->load(['items.item:id,code,name', 'items.unit:id,code,name', 'items.lot:id,lot_number', 'party:id,vendor_name', 'branch:id,branch_name']), 201);
     }
 
     public function show(OutwardEntry $outward)
     {
-        $outward->load(['items.item:id,code,name', 'items.lot:id,lot_number', 'items.grade:id,code,name', 'party:id,vendor_name,vendor_code', 'branch:id,branch_name,branch_code', 'creator:id,name', 'confirmer:id,name']);
+        $outward->load(['items.item:id,code,name', 'items.unit:id,code,name', 'items.lot:id,lot_number', 'items.grade:id,code,name', 'party:id,vendor_name,vendor_code', 'branch:id,branch_name,branch_code', 'creator:id,name', 'confirmer:id,name']);
         return response()->json($outward);
     }
 
@@ -123,6 +150,7 @@ class OutwardController extends Controller
             return response()->json(['success' => false, 'message' => 'Only draft entries can be edited.'], 422);
         }
         $data = $request->validate([
+            'bill_no' => 'nullable|string|max:100',
             'branch_id' => 'sometimes|exists:branches,id',
             'party_id' => 'nullable|exists:vendors,id',
             'date' => 'sometimes|date',

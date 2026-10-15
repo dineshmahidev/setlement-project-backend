@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\InventoryTransaction;
+use App\Models\StockTransfer;
 use App\Services\InventoryLedgerService;
 use App\Services\InventoryService;
 use Barryvdh\DomPDF\Facade\Pdf;
@@ -49,29 +50,109 @@ class InventoryController extends Controller
     public function stock(Request $request)
     {
         $branchId = $request->branch_id ? (int) $request->branch_id : null;
+        $dateFrom = $request->date_from ?: null;
+        $dateTo = $request->date_to ?: null;
+
         if (! $branchId && $ids = $this->allowedBranchIds()) {
-            // aggregate across allowed branches
-            $all = $this->service->currentStock(null);
-            // filter: recompute limited to allowed branches
+            $all = $this->service->currentStock(null, $dateFrom, $dateTo);
             $filtered = [];
             foreach ($all as $row) {
                 $inq = InventoryTransaction::where('item_id', $row['item_id'])
                     ->whereIn('branch_id', $ids)->where('status', 'POSTED');
-                $in = (clone $inq)->where('type', 'STOCK_IN')->sum('quantity')
-                    + (clone $inq)->where('type', 'TRANSFER_IN')->sum('quantity')
-                    + (clone $inq)->where('type', 'ADJUSTMENT_IN')->sum('quantity');
-                $out = (clone $inq)->where('type', 'STOCK_OUT')->sum('quantity')
-                    + (clone $inq)->where('type', 'TRANSFER_OUT')->sum('quantity')
-                    + (clone $inq)->where('type', 'ADJUSTMENT_OUT')->sum('quantity');
-                $avail = round((float) $in - (float) $out, 3);
+
+                $periodInq = clone $inq;
+                if ($dateFrom) $periodInq->whereDate('date', '>=', $dateFrom);
+                if ($dateTo) $periodInq->whereDate('date', '<=', $dateTo);
+
+                $in = (clone $periodInq)->where('type', 'STOCK_IN')->sum('quantity')
+                    + (clone $periodInq)->where('type', 'TRANSFER_IN')->sum('quantity')
+                    + (clone $periodInq)->where('type', 'ADJUSTMENT_IN')->sum('quantity');
+                $out = (clone $periodInq)->where('type', 'STOCK_OUT')->sum('quantity')
+                    + (clone $periodInq)->where('type', 'TRANSFER_OUT')->sum('quantity')
+                    + (clone $periodInq)->where('type', 'ADJUSTMENT_OUT')->sum('quantity');
+
+                $cumInq = clone $inq;
+                if ($dateTo) $cumInq->whereDate('date', '<=', $dateTo);
+
+                $cumIn = (clone $cumInq)->where('type', 'STOCK_IN')->sum('quantity')
+                    + (clone $cumInq)->where('type', 'TRANSFER_IN')->sum('quantity')
+                    + (clone $cumInq)->where('type', 'ADJUSTMENT_IN')->sum('quantity');
+                $cumOut = (clone $cumInq)->where('type', 'STOCK_OUT')->sum('quantity')
+                    + (clone $cumInq)->where('type', 'TRANSFER_OUT')->sum('quantity')
+                    + (clone $cumInq)->where('type', 'ADJUSTMENT_OUT')->sum('quantity');
+
+                $avail = round((float) $cumIn - (float) $cumOut, 3);
                 $min = (float) $row['min_stock_level'];
                 $status = $avail <= 0 ? 'Out of Stock' : ($min > 0 && $avail <= $min ? 'Low Stock' : 'Normal');
-                $filtered[] = $row + ['available' => $avail, 'total_in' => round((float)$in,3), 'total_out' => round((float)$out,3), 'status' => $status];
+                $filtered[] = $row + [
+                    'available' => $avail,
+                    'total_in' => round((float)$in, 3),
+                    'total_out' => round((float)$out, 3),
+                    'opening' => round((float)$cumIn - (float)$cumOut - ((float)$in - (float)$out), 3),
+                    'status' => $status
+                ];
             }
             return response()->json($filtered);
         }
 
-        return response()->json($this->service->currentStock($branchId));
+        return response()->json($this->service->currentStock($branchId, $dateFrom, $dateTo));
+    }
+
+    public function stockPdf(Request $request)
+    {
+        $branchId = $request->branch_id ? (int) $request->branch_id : null;
+        $dateFrom = $request->date_from ?: null;
+        $dateTo = $request->date_to ?: null;
+        $itemId = $request->item_id ? (int) $request->item_id : null;
+        $search = $request->search ? trim($request->search) : null;
+
+        $stockResponse = $this->stock($request);
+        $rows = json_decode($stockResponse->getContent(), true) ?: [];
+
+        if ($itemId) {
+            $rows = array_values(array_filter($rows, fn ($r) => (int)($r['item_id'] ?? 0) === $itemId));
+        }
+        if ($search) {
+            $s = strtolower($search);
+            $rows = array_values(array_filter($rows, fn ($r) => 
+                str_contains(strtolower($r['item_name'] ?? ''), $s) ||
+                str_contains(strtolower($r['item_code'] ?? ''), $s)
+            ));
+        }
+
+        $totIn = array_sum(array_column($rows, 'total_in'));
+        $totOut = array_sum(array_column($rows, 'total_out'));
+        $totAvailable = array_sum(array_column($rows, 'available'));
+
+        $company = app(\App\Services\PdfService::class)->resolveCompany($branchId);
+        $branchName = $branchId ? \App\Models\Branch::find($branchId)?->branch_name : null;
+        $itemName = $itemId ? \App\Models\Item::find($itemId)?->name : null;
+
+        $pdf = Pdf::loadView('pdf.current_stock', [
+            'rows' => $rows,
+            'company' => $company,
+            'dateFrom' => $dateFrom,
+            'dateTo' => $dateTo,
+            'branchName' => $branchName,
+            'itemName' => $itemName,
+            'totIn' => $totIn,
+            'totOut' => $totOut,
+            'totAvailable' => $totAvailable,
+        ])->setPaper('a4', 'landscape');
+
+        $filename = 'Current_Stock_Report';
+        if ($dateFrom && $dateTo) {
+            $filename .= '_' . $dateFrom . '_to_' . $dateTo;
+        } elseif ($dateFrom) {
+            $filename .= '_from_' . $dateFrom;
+        } elseif ($dateTo) {
+            $filename .= '_upto_' . $dateTo;
+        } else {
+            $filename .= '_' . date('Ymd_His');
+        }
+        $filename .= '.pdf';
+
+        return $pdf->stream($filename);
     }
 
     public function ledger(Request $request)
@@ -90,6 +171,20 @@ class InventoryController extends Controller
         $txs = $query->get();
 
         $running = [];
+        if ($request->filled('date_from')) {
+            $priorQuery = InventoryTransaction::where('status', 'POSTED')
+                ->whereDate('date', '<', $request->date_from);
+            $this->scopeBranches($priorQuery);
+            if ($request->filled('item_id')) $priorQuery->where('item_id', $request->item_id);
+            if ($request->filled('branch_id')) $priorQuery->where('branch_id', $request->branch_id);
+            $priorBalances = $priorQuery->selectRaw("CONCAT(branch_id, '_', item_id) as k, SUM(signed_quantity) as total_qty")
+                ->groupBy('branch_id', 'item_id')
+                ->pluck('total_qty', 'k');
+            foreach ($priorBalances as $k => $qty) {
+                $running[$k] = (float) $qty;
+            }
+        }
+
         $rows = $txs->map(function ($tx) use (&$running) {
             $key = $tx->branch_id.'_'.$tx->item_id;
             $opening = $running[$key] ?? 0;
@@ -107,26 +202,49 @@ class InventoryController extends Controller
             ];
             $cols = $map[$tx->type] ?? [];
 
+            $partyName = $tx->vendor?->vendor_name ?: ($tx->vendor?->name ?: ($tx->customer ?: $tx->destination));
+            if (!$partyName && $tx->party_id) {
+                $partyName = \App\Models\Vendor::whereKey($tx->party_id)->value('vendor_name');
+            }
+            if (!$partyName && $tx->reference_type === 'OUTWARD' && $tx->reference_id) {
+                $partyName = \App\Models\OutwardEntry::whereKey($tx->reference_id)->with('party')->first()?->party?->vendor_name;
+            }
+            if (!$partyName && $tx->reference_type === 'INWARD' && $tx->reference_id) {
+                $partyName = \App\Models\InwardEntry::whereKey($tx->reference_id)->with('party')->first()?->party?->vendor_name;
+            }
+
+            $vehicleNumber = $tx->vehicle?->number ?: $tx->vehicle?->vehicle_number;
+            if (!$vehicleNumber && $tx->reference_type === 'OUTWARD' && $tx->reference_id) {
+                $vehicleNumber = \App\Models\OutwardEntry::whereKey($tx->reference_id)->value('vehicle_number');
+            }
+            if (!$vehicleNumber && $tx->reference_type === 'INWARD' && $tx->reference_id) {
+                $vehicleNumber = \App\Models\InwardEntry::whereKey($tx->reference_id)->value('vehicle_number');
+            }
+
+            $inQty = round((float) ($cols['in'] ?? $cols['tin'] ?? 0), 3);
+            $outQty = round((float) ($cols['out'] ?? $cols['tout'] ?? 0), 3);
+            if ($tx->type === 'ADJUSTMENT_IN') $inQty = round((float) $tx->quantity, 3);
+            if ($tx->type === 'ADJUSTMENT_OUT') $outQty = round((float) $tx->quantity, 3);
+
             return [
                 'date' => $tx->date->toDateString(),
+                'lot' => $tx->lot_number ?: '—',
+                'party' => $partyName ?: '—',
+                'vendor_customer' => $partyName ?: '—',
+                'type' => $tx->type,
+                'in' => $inQty,
+                'out' => $outQty,
+                'stock_in' => $inQty,
+                'stock_out' => $outQty,
+                'vehicle' => $vehicleNumber ?: '—',
                 'transaction_number' => $tx->transaction_number,
                 'branch' => $tx->branch?->name,
                 'branch_id' => $tx->branch_id,
                 'item' => $tx->item?->name,
                 'item_id' => $tx->item_id,
                 'unit' => $tx->item?->unit?->code,
-                'type' => $tx->type,
                 'opening_balance' => round($opening, 3),
-                'stock_in' => round((float) ($cols['in'] ?? 0), 3),
-                'stock_out' => round((float) ($cols['out'] ?? 0), 3),
-                'transfer_in' => round((float) ($cols['tin'] ?? 0), 3),
-                'transfer_out' => round((float) ($cols['tout'] ?? 0), 3),
-                'adjustment' => round((float) ($cols['adj'] ?? 0), 3),
                 'closing_balance' => round($closing, 3),
-                'vehicle' => $tx->vehicle?->number,
-                'vendor_customer' => $tx->vendor?->name ?? $tx->customer,
-                'lot' => $tx->lot_number,
-                'reference' => $tx->source_reference ?? $tx->reference_type,
             ];
         });
 
@@ -153,7 +271,25 @@ class InventoryController extends Controller
         $txs = $query->get();
 
         $running = [];
-        $rows = $txs->map(function ($tx) use (&$running) {
+        if ($request->filled('date_from')) {
+            $priorQuery = InventoryTransaction::where('status', 'POSTED')
+                ->whereDate('date', '<', $request->date_from);
+            $this->scopeBranches($priorQuery);
+            if ($request->filled('item_id')) $priorQuery->where('item_id', $request->item_id);
+            if ($request->filled('branch_id')) $priorQuery->where('branch_id', $request->branch_id);
+            $priorBalances = $priorQuery->selectRaw("CONCAT(branch_id, '_', item_id) as k, SUM(signed_quantity) as total_qty")
+                ->groupBy('branch_id', 'item_id')
+                ->pluck('total_qty', 'k');
+            foreach ($priorBalances as $k => $qty) {
+                $running[$k] = (float) $qty;
+            }
+        }
+
+        $totIn = 0;
+        $totOut = 0;
+        $latestClosingByKey = [];
+
+        $rows = $txs->map(function ($tx) use (&$running, &$totIn, &$totOut, &$latestClosingByKey) {
             $key = $tx->branch_id.'_'.$tx->item_id;
             $opening = $running[$key] ?? 0;
             $closing = $opening + (float) $tx->signed_quantity;
@@ -170,26 +306,57 @@ class InventoryController extends Controller
             ];
             $cols = $map[$tx->type] ?? [];
 
+            $partyName = $tx->vendor?->vendor_name ?: ($tx->vendor?->name ?: ($tx->customer ?: $tx->destination));
+            if (!$partyName && $tx->party_id) {
+                $partyName = \App\Models\Vendor::whereKey($tx->party_id)->value('vendor_name');
+            }
+            if (!$partyName && $tx->reference_type === 'OUTWARD' && $tx->reference_id) {
+                $partyName = \App\Models\OutwardEntry::whereKey($tx->reference_id)->with('party')->first()?->party?->vendor_name;
+            }
+            if (!$partyName && $tx->reference_type === 'INWARD' && $tx->reference_id) {
+                $partyName = \App\Models\InwardEntry::whereKey($tx->reference_id)->with('party')->first()?->party?->vendor_name;
+            }
+
+            $vehicleNumber = $tx->vehicle?->number ?: $tx->vehicle?->vehicle_number;
+            if (!$vehicleNumber && $tx->reference_type === 'OUTWARD' && $tx->reference_id) {
+                $vehicleNumber = \App\Models\OutwardEntry::whereKey($tx->reference_id)->value('vehicle_number');
+            }
+            if (!$vehicleNumber && $tx->reference_type === 'INWARD' && $tx->reference_id) {
+                $vehicleNumber = \App\Models\InwardEntry::whereKey($tx->reference_id)->value('vehicle_number');
+            }
+
+            $inQty = round((float) ($cols['in'] ?? $cols['tin'] ?? 0), 3);
+            $outQty = round((float) ($cols['out'] ?? $cols['tout'] ?? 0), 3);
+            if ($tx->type === 'ADJUSTMENT_IN') $inQty = round((float) $tx->quantity, 3);
+            if ($tx->type === 'ADJUSTMENT_OUT') $outQty = round((float) $tx->quantity, 3);
+
+            $totIn += $inQty;
+            $totOut += $outQty;
+            $latestClosingByKey[$key] = round($closing, 3);
+
             return [
                 'date' => $tx->date->toDateString(),
+                'lot' => $tx->lot_number ?: '—',
+                'party' => $partyName ?: '—',
+                'vendor_customer' => $partyName ?: '—',
+                'type' => $tx->type,
+                'in' => $inQty,
+                'out' => $outQty,
+                'stock_in' => $inQty,
+                'stock_out' => $outQty,
+                'vehicle' => $vehicleNumber ?: '—',
                 'transaction_number' => $tx->transaction_number,
                 'branch' => $tx->branch?->name,
                 'branch_id' => $tx->branch_id,
                 'item' => $tx->item?->name,
                 'item_id' => $tx->item_id,
                 'unit' => $tx->item?->unit?->code,
-                'type' => $tx->type,
                 'opening_balance' => round($opening, 3),
-                'stock_in' => round((float) ($cols['in'] ?? 0), 3),
-                'stock_out' => round((float) ($cols['out'] ?? 0), 3),
-                'transfer_in' => round((float) ($cols['tin'] ?? 0), 3),
-                'transfer_out' => round((float) ($cols['tout'] ?? 0), 3),
-                'adjustment' => round((float) ($cols['adj'] ?? 0), 3),
                 'closing_balance' => round($closing, 3),
-                'vehicle' => $tx->vehicle?->number,
-                'lot' => $tx->lot_number,
             ];
         });
+
+        $totClosing = array_sum($latestClosingByKey);
 
         $company = app(\App\Services\PdfService::class)->resolveCompany($request->branch_id ?? null);
         $branchName = $request->filled('branch_id') ? \App\Models\Branch::find($request->branch_id)?->branch_name : null;
@@ -202,9 +369,24 @@ class InventoryController extends Controller
             'dateTo' => $request->date_to,
             'branchName' => $branchName,
             'itemName' => $itemName,
+            'totIn' => $totIn,
+            'totOut' => $totOut,
+            'totClosing' => $totClosing,
         ])->setPaper('a4', 'landscape');
 
-        return $pdf->stream('Stock_Ledger_' . date('Ymd_His') . '.pdf');
+        $filename = 'Stock_Ledger';
+        if ($request->filled('date_from') && $request->filled('date_to')) {
+            $filename .= '_' . $request->date_from . '_to_' . $request->date_to;
+        } elseif ($request->filled('date_from')) {
+            $filename .= '_from_' . $request->date_from;
+        } elseif ($request->filled('date_to')) {
+            $filename .= '_upto_' . $request->date_to;
+        } else {
+            $filename .= '_' . date('Ymd_His');
+        }
+        $filename .= '.pdf';
+
+        return $pdf->stream($filename);
     }
 
     public function lowStock(Request $request)
@@ -332,6 +514,118 @@ class InventoryController extends Controller
         }
     }
 
+    public function transfers(Request $request)
+    {
+        $query = StockTransfer::with(['item.unit', 'unit', 'fromBranch', 'toBranch', 'vehicle'])
+            ->orderByDesc('date')
+            ->orderByDesc('id');
+
+        if ($request->filled('from_branch_id')) {
+            $query->where('from_branch_id', $request->from_branch_id);
+        }
+        if ($request->filled('to_branch_id')) {
+            $query->where('to_branch_id', $request->to_branch_id);
+        }
+        if ($request->filled('branch_id')) {
+            $bId = $request->branch_id;
+            $query->where(fn ($q) => $q->where('from_branch_id', $bId)->orWhere('to_branch_id', $bId));
+        }
+        if ($request->filled('item_id')) {
+            $query->where('item_id', $request->item_id);
+        }
+        if ($request->filled('date_from')) {
+            $query->whereDate('date', '>=', $request->date_from);
+        }
+        if ($request->filled('date_to')) {
+            $query->whereDate('date', '<=', $request->date_to);
+        }
+        if ($request->filled('search')) {
+            $s = trim($request->search);
+            $query->where(function ($q) use ($s) {
+                $q->where('transfer_number', 'like', "%$s%")
+                    ->orWhere('lot_number', 'like', "%$s%")
+                    ->orWhere('remarks', 'like', "%$s%")
+                    ->orWhereHas('vehicle', fn ($vq) => $vq->where('vehicle_number', 'like', "%$s%"))
+                    ->orWhereHas('item', fn ($iq) => $iq->where('name', 'like', "%$s%"));
+            });
+        }
+
+        if ($request->boolean('all')) {
+            return response()->json($query->get());
+        }
+
+        return response()->json($query->paginate($request->get('per_page', 25)));
+    }
+
+    public function transfersPdf(Request $request)
+    {
+        $query = StockTransfer::with(['item.unit', 'unit', 'fromBranch', 'toBranch', 'vehicle'])
+            ->orderBy('date')
+            ->orderBy('id');
+
+        if ($request->filled('from_branch_id')) {
+            $query->where('from_branch_id', $request->from_branch_id);
+        }
+        if ($request->filled('to_branch_id')) {
+            $query->where('to_branch_id', $request->to_branch_id);
+        }
+        if ($request->filled('branch_id')) {
+            $bId = $request->branch_id;
+            $query->where(fn ($q) => $q->where('from_branch_id', $bId)->orWhere('to_branch_id', $bId));
+        }
+        if ($request->filled('item_id')) {
+            $query->where('item_id', $request->item_id);
+        }
+        if ($request->filled('date_from')) {
+            $query->whereDate('date', '>=', $request->date_from);
+        }
+        if ($request->filled('date_to')) {
+            $query->whereDate('date', '<=', $request->date_to);
+        }
+        if ($request->filled('search')) {
+            $s = trim($request->search);
+            $query->where(function ($q) use ($s) {
+                $q->where('transfer_number', 'like', "%$s%")
+                    ->orWhere('lot_number', 'like', "%$s%")
+                    ->orWhere('remarks', 'like', "%$s%")
+                    ->orWhereHas('vehicle', fn ($vq) => $vq->where('vehicle_number', 'like', "%$s%"))
+                    ->orWhereHas('item', fn ($iq) => $iq->where('name', 'like', "%$s%"));
+            });
+        }
+
+        $transfers = $query->get();
+        $totQuantity = (float) $transfers->sum('quantity');
+
+        $branchId = $request->branch_id ?: $request->from_branch_id;
+        $company = app(\App\Services\PdfService::class)->resolveCompany($branchId);
+        $branchName = $request->branch_id ? \App\Models\Branch::find($request->branch_id)?->branch_name : null;
+        $itemName = $request->item_id ? \App\Models\Item::find($request->item_id)?->name : null;
+
+        $pdf = Pdf::loadView('pdf.stock_transfers', [
+            'transfers' => $transfers,
+            'company' => $company,
+            'dateFrom' => $request->date_from,
+            'dateTo' => $request->date_to,
+            'branchName' => $branchName,
+            'itemName' => $itemName,
+            'totQuantity' => $totQuantity,
+        ])->setPaper('a4', 'landscape');
+
+        $filename = 'Stock_Transfers_Report';
+        if ($request->date_from && $request->date_to) {
+            $filename .= '_' . $request->date_from . '_to_' . $request->date_to;
+        } elseif ($request->date_from) {
+            $filename .= '_from_' . $request->date_from;
+        } elseif ($request->date_to) {
+            $filename .= '_upto_' . $request->date_to;
+        } else {
+            $filename .= '_' . date('Ymd_His');
+        }
+        $filename .= '.pdf';
+
+        return $pdf->stream($filename);
+    }
+
     public function transfer(Request $request)
     {
         $data = $request->validate([
@@ -341,12 +635,33 @@ class InventoryController extends Controller
             'item_id' => ['required', 'exists:items,id'],
             'quantity' => ['required', 'numeric', 'gt:0'],
             'unit_id' => ['nullable', 'exists:units,id'],
-            'vehicle_id' => ['nullable', 'exists:vehicles,id'],
+            'vehicle_id' => ['nullable'],
+            'vehicle_number' => ['nullable', 'string', 'max:50'],
+            'vehicle' => ['nullable', 'string', 'max:50'],
             'driver_name' => ['nullable', 'string', 'max:150'],
             'driver_mobile' => ['nullable', 'string', 'max:20'],
             'lot_number' => ['nullable', 'string', 'max:100'],
             'remarks' => ['nullable', 'string', 'max:1000'],
         ]);
+
+        $vNum = trim($request->input('vehicle_number') ?? $request->input('vehicle') ?? '');
+        if ($vNum !== '') {
+            $companyId = $this->activeCompanyId() ?? 1;
+            $veh = \App\Models\Vehicle::where('vehicle_number', $vNum)->first();
+            if (!$veh) {
+                $veh = \App\Models\Vehicle::create([
+                    'vehicle_number' => $vNum,
+                    'status' => 'ACTIVE',
+                    'company_id' => $companyId,
+                ]);
+            }
+            $data['vehicle_id'] = $veh->id;
+        }
+
+        // Auto-resolve unit_id from item if not provided
+        if (empty($data['unit_id']) && !empty($data['item_id'])) {
+            $data['unit_id'] = \App\Models\Item::whereKey($data['item_id'])->value('unit_id');
+        }
 
         try {
             $transfer = $this->service->transfer($data, $request->user()->id);
@@ -380,6 +695,7 @@ class InventoryController extends Controller
     {
         $branchId = $request->branch_id ? (int) $request->branch_id : null;
         $vendorId = $request->vendor_id ? (int) $request->vendor_id : null;
+        $itemId = $request->item_id ? (int) $request->item_id : ($request->product_id ? (int) $request->product_id : null);
 
         // 1. Query Settlements (Vendor Deliveries / Stock Inlets)
         $settlementsQuery = \App\Models\Settlement::with(['vendor', 'product', 'branch'])
@@ -390,6 +706,9 @@ class InventoryController extends Controller
         }
         if ($vendorId) {
             $settlementsQuery->where('vendor_id', $vendorId);
+        }
+        if ($itemId) {
+            $settlementsQuery->where('product_id', $itemId);
         }
         if ($request->filled('date_from')) {
             $settlementsQuery->whereDate('date', '>=', $request->date_from);
@@ -408,6 +727,9 @@ class InventoryController extends Controller
         }
         if ($vendorId) {
             $txQuery->where('vendor_id', $vendorId);
+        }
+        if ($itemId) {
+            $txQuery->where('item_id', $itemId);
         }
         if ($request->filled('date_from')) {
             $txQuery->whereDate('date', '>=', $request->date_from);
@@ -644,7 +966,7 @@ class InventoryController extends Controller
         ]);
     }
 
-    public function stockPdf(Request $request)
+    public function partySummaryPdf(Request $request)
     {
         $response = $this->partySummary($request);
         $data = $response->getData(true);

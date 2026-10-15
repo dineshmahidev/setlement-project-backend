@@ -19,9 +19,11 @@ class VendorLedgerController extends Controller
 
         $vendor = Vendor::findOrFail($request->vendor_id);
         $this->guardCompanyOwnership($vendor);
+        $this->syncSettlements($vendor);
 
         $query = VendorLedger::with(['branch', 'creator'])
-            ->where('vendor_id', $vendor->id);
+            ->where('vendor_id', $vendor->id)
+            ->where('document_type', '!=', 'invoice');
         $this->scopeBranches($query);
 
         if ($request->filled('branch_id')) {
@@ -29,7 +31,26 @@ class VendorLedgerController extends Controller
         }
 
         if ($request->filled('document_type')) {
-            $query->where('document_type', $request->document_type);
+            $docType = strtolower($request->document_type);
+            $query->where(function ($q) use ($docType) {
+                if ($docType === 'debit_note') {
+                    $q->where(function ($sub) {
+                        $sub->whereIn('document_type', ['debit_note', 'payment_adjustment'])
+                            ->orWhere(function ($s2) {
+                                $s2->where('document_type', 'settlement')->where('debit', '>', 0);
+                            });
+                    });
+                } elseif ($docType === 'credit_note') {
+                    $q->where(function ($sub) {
+                        $sub->whereIn('document_type', ['credit_note', 'receipt_adjustment', 'settlement_cancellation'])
+                            ->orWhere(function ($s2) {
+                                $s2->where('document_type', 'settlement')->where('credit', '>', 0);
+                            });
+                    });
+                } else {
+                    $q->whereRaw('LOWER(document_type) = ?', [$docType]);
+                }
+            });
         }
 
         if ($request->filled('from_date') && $request->filled('to_date')) {
@@ -101,15 +122,37 @@ class VendorLedgerController extends Controller
 
         $vendor = Vendor::findOrFail($request->vendor_id);
         $this->guardCompanyOwnership($vendor);
+        $this->syncSettlements($vendor);
 
-        $query = VendorLedger::with(['branch'])->where('vendor_id', $vendor->id);
+        $query = VendorLedger::with(['branch'])
+            ->where('vendor_id', $vendor->id)
+            ->where('document_type', '!=', 'invoice');
         $this->scopeBranches($query);
 
         if ($request->filled('branch_id')) {
             $query->where('branch_id', $request->branch_id);
         }
         if ($request->filled('document_type')) {
-            $query->where('document_type', $request->document_type);
+            $docType = strtolower($request->document_type);
+            $query->where(function ($q) use ($docType) {
+                if ($docType === 'debit_note') {
+                    $q->where(function ($sub) {
+                        $sub->whereIn('document_type', ['debit_note', 'payment_adjustment'])
+                            ->orWhere(function ($s2) {
+                                $s2->where('document_type', 'settlement')->where('debit', '>', 0);
+                            });
+                    });
+                } elseif ($docType === 'credit_note') {
+                    $q->where(function ($sub) {
+                        $sub->whereIn('document_type', ['credit_note', 'receipt_adjustment', 'settlement_cancellation'])
+                            ->orWhere(function ($s2) {
+                                $s2->where('document_type', 'settlement')->where('credit', '>', 0);
+                            });
+                    });
+                } else {
+                    $q->whereRaw('LOWER(document_type) = ?', [$docType]);
+                }
+            });
         }
         if ($request->filled('from_date') && $request->filled('to_date')) {
             $query->whereBetween('transaction_date', [$request->from_date, $request->to_date]);
@@ -140,11 +183,77 @@ class VendorLedgerController extends Controller
         return $pdf->stream('Vendor_Ledger_' . $vendor->vendor_code . '.pdf');
     }
 
+    private function syncSettlements(Vendor $vendor): void
+    {
+        $recalcNeeded = false;
+
+        // Auto-sync any existing settlements for this vendor that don't have ledger entries yet
+        $missingSettlements = \App\Models\Settlement::where('vendor_id', $vendor->id)
+            ->where('status', '!=', 'cancelled')
+            ->whereNotIn('id', function ($sub) {
+                $sub->select('document_id')
+                    ->from('vendor_ledger')
+                    ->where('document_type', 'settlement')
+                    ->whereNotNull('document_id');
+            })
+            ->get();
+
+        if ($missingSettlements->isNotEmpty()) {
+            foreach ($missingSettlements as $st) {
+                $amount = $st->getDebitCreditAmount();
+                $isDebit = $st->isDebitNoteSettlement();
+
+                VendorLedger::postTransaction([
+                    'vendor_id' => $st->vendor_id,
+                    'branch_id' => $st->branch_id,
+                    'transaction_date' => $st->settlement_date,
+                    'document_type' => 'settlement',
+                    'document_id' => $st->id,
+                    'document_number' => $st->settlement_number,
+                    'lot_number' => $st->lot_number,
+                    'description' => 'Settlement Bill #' . $st->settlement_number . ($st->bill_number ? ' (Bill #' . $st->bill_number . ')' : '') . ' - ' . number_format($st->final_weight_mt, 3) . ' MT',
+                    'debit' => $isDebit ? $amount : 0,
+                    'credit' => $isDebit ? 0 : $amount,
+                    'created_by' => $st->created_by,
+                ]);
+            }
+            $recalcNeeded = true;
+        }
+
+        // Auto-correct any existing settlement ledger entries with wrong debit/credit allocation
+        $settlementLedgers = VendorLedger::where('vendor_id', $vendor->id)
+            ->where('document_type', 'settlement')
+            ->whereNotNull('document_id')
+            ->get();
+
+        foreach ($settlementLedgers as $sLedger) {
+            $settlement = \App\Models\Settlement::find($sLedger->document_id);
+            if ($settlement) {
+                $isDebit = $settlement->isDebitNoteSettlement();
+                $amount = $settlement->getDebitCreditAmount();
+
+                $expectedDebit = $isDebit ? $amount : 0;
+                $expectedCredit = $isDebit ? 0 : $amount;
+
+                if (abs((float)$sLedger->debit - $expectedDebit) > 0.01 || abs((float)$sLedger->credit - $expectedCredit) > 0.01) {
+                    $sLedger->update([
+                        'debit' => $expectedDebit,
+                        'credit' => $expectedCredit,
+                    ]);
+                    $recalcNeeded = true;
+                }
+            }
+        }
+
+        if ($recalcNeeded) {
+            VendorLedger::recalculateBalances($vendor->id);
+        }
+    }
+
     private function renderLedgerHtml($vendor, $entries, $company, $fromDate, $toDate)
     {
         $totalDebit = $entries->sum('debit');
         $totalCredit = $entries->sum('credit');
-        $closingBalance = $vendor->current_balance;
 
         $rows = '';
         foreach ($entries as $e) {
@@ -152,7 +261,6 @@ class VendorLedgerController extends Controller
             $docType = strtoupper(str_replace('_', ' ', $e->document_type));
             $debit = $e->debit > 0 ? '₹' . number_format($e->debit, 2) : '-';
             $credit = $e->credit > 0 ? '₹' . number_format($e->credit, 2) : '-';
-            $bal = '₹' . number_format($e->balance, 2);
 
             $rows .= "<tr>
                 <td>{$date}</td>
@@ -161,7 +269,6 @@ class VendorLedgerController extends Controller
                 <td>{$e->description}</td>
                 <td style='text-align: right;'>{$debit}</td>
                 <td style='text-align: right;'>{$credit}</td>
-                <td style='text-align: right; font-weight: bold;'>{$bal}</td>
             </tr>";
         }
 
@@ -201,7 +308,6 @@ class VendorLedgerController extends Controller
                         <th>Description</th>
                         <th style='text-align: right;'>Debit (₹)</th>
                         <th style='text-align: right;'>Credit (₹)</th>
-                        <th style='text-align: right;'>Balance (₹)</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -210,7 +316,6 @@ class VendorLedgerController extends Controller
                         <td colspan='4' style='text-align: right;'>TOTALS:</td>
                         <td style='text-align: right;'>₹" . number_format($totalDebit, 2) . "</td>
                         <td style='text-align: right;'>₹" . number_format($totalCredit, 2) . "</td>
-                        <td style='text-align: right; color: #065f46;'>₹" . number_format($closingBalance, 2) . "</td>
                     </tr>
                 </tbody>
             </table>

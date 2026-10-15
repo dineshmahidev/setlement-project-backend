@@ -172,25 +172,29 @@
 
     <table class="info-table">
         <tr>
-            <td style="width: 25%;">
+            <td style="width: 20%;">
                 <div class="info-label">Dispatch No</div>
                 <div class="info-val">{{ $outward->entry_number }}</div>
             </td>
-            <td style="width: 25%;">
+            <td style="width: 20%;">
+                <div class="info-label">Bill / Inv No</div>
+                <div class="info-val font-mono" style="color: #0b3558; font-weight: bold;">{{ $outward->bill_no ?: '—' }}</div>
+            </td>
+            <td style="width: 20%;">
                 <div class="info-label">Date</div>
                 <div class="info-val">{{ \Carbon\Carbon::parse($outward->date)->format('d-m-Y') }}</div>
             </td>
-            <td style="width: 25%;">
+            <td style="width: 20%;">
                 <div class="info-label">Godown / Branch</div>
                 <div class="info-val">{{ $outward->branch?->branch_name ?: 'Main Branch' }}</div>
             </td>
-            <td style="width: 25%;">
+            <td style="width: 20%;">
                 <div class="info-label">Destination</div>
                 <div class="info-val">{{ $outward->destination ?: '—' }}</div>
             </td>
         </tr>
         <tr>
-            <td>
+            <td colspan="2">
                 <div class="info-label">Party / Customer</div>
                 <div class="info-val">{{ $outward->party?->vendor_name ?: ($outward->destination ?: '—') }}</div>
                 @if($outward->party?->vendor_code)<div style="font-size: 6.5pt; color: #64748b;">Code: {{ $outward->party->vendor_code }}</div>@endif
@@ -215,13 +219,14 @@
     <table class="items-table">
         <thead>
             <tr>
-                <th style="width: 30px;" class="text-center">#</th>
+                <th style="width: 25px;" class="text-center">#</th>
                 <th class="text-left">Item Description</th>
                 <th class="text-left">Lot Number</th>
-                <th style="width: 70px;" class="text-right">Qty</th>
-                <th style="width: 50px;" class="text-center">Unit</th>
-                <th style="width: 75px;" class="text-right">Rate (₹)</th>
-                <th style="width: 90px;" class="text-right">Amount (₹)</th>
+                <th style="width: 65px;" class="text-right">Qty</th>
+                <th style="width: 45px;" class="text-center">Unit</th>
+                <th style="width: 50px;" class="text-right">Oil %</th>
+                <th style="width: 70px;" class="text-right">Rate (₹)</th>
+                <th style="width: 85px;" class="text-right">Amount (₹)</th>
             </tr>
         </thead>
         <tbody>
@@ -241,7 +246,8 @@
                     </td>
                     <td>{{ $it->lot?->lot_number ?: ($it->lot_id ? 'Lot #'.$it->lot_id : '—') }}</td>
                     <td class="text-right font-bold">{{ number_format($qty, 3) }}</td>
-                    <td class="text-center">{{ $it->unit?->unit_name ?: ($it->unit?->symbol ?: 'MT') }}</td>
+                    <td class="text-center">{{ $it->unit?->code ?: ($it->unit?->name ?: ($it->unit?->unit_name ?: 'MT')) }}</td>
+                    <td class="text-right">{{ $it->oil_pct ? number_format($it->oil_pct, 2).'%' : '—' }}</td>
                     <td class="text-right">{{ $it->rate ? number_format($it->rate, 2) : '—' }}</td>
                     <td class="text-right font-bold">{{ number_format($amt, 2) }}</td>
                 </tr>
@@ -251,7 +257,7 @@
             <tr class="total-row">
                 <td colspan="3" class="text-right">TOTAL</td>
                 <td class="text-right">{{ number_format($totalQty, 3) }}</td>
-                <td colspan="2"></td>
+                <td colspan="3"></td>
                 <td class="text-right">₹ {{ number_format($totalAmt > 0 ? $totalAmt : $outward->total_amount, 2) }}</td>
             </tr>
         </tfoot>

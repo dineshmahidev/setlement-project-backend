@@ -96,4 +96,25 @@ class VendorLedger extends Model
             ]);
         });
     }
+
+    /**
+     * Recalculate running balances for a vendor chronologically
+     */
+    public static function recalculateBalances($vendorId): void
+    {
+        $vendor = Vendor::find($vendorId);
+        if (!$vendor) return;
+
+        $running = (float)$vendor->opening_balance;
+        $entries = self::where('vendor_id', $vendorId)
+            ->orderBy('transaction_date', 'asc')
+            ->orderBy('id', 'asc')
+            ->get();
+
+        foreach ($entries as $entry) {
+            $running = $running - (float)$entry->debit + (float)$entry->credit;
+            $entry->balance = $running;
+            $entry->saveQuietly();
+        }
+    }
 }

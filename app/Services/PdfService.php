@@ -47,14 +47,86 @@ class PdfService
         $company = $this->resolveCompany($settlement->branch_id);
         $company->state_code = $company->state_code ?: substr((string) $company->gstin, 0, 2);
 
+        $origInv = (float)($settlement->original_invoice_value ?? 0);
+        $branVal = (float)($settlement->bran_value ?? 0);
+        $manualAdj = (float)($settlement->manual_adjustment ?? 0);
         $debitNote = $settlement->debitNotes->first();
-        $noteType = $debitNote ? ($debitNote->transaction_type ?: 'debit') : 'debit';
+
+        // 1. Mathematically determine if this is a Credit Note or Debit Note
+        $noteType = null;
+        if ($origInv > 0) {
+            $diff = ($origInv - $branVal) + $manualAdj;
+            $noteType = ($diff < -0.001) ? 'credit' : 'debit';
+        } elseif ($manualAdj != 0) {
+            $noteType = ($manualAdj < -0.001) ? 'credit' : 'debit';
+        } elseif (!empty($settlement->note_type)) {
+            $noteType = strtolower($settlement->note_type);
+        } elseif ($debitNote && !empty($debitNote->transaction_type)) {
+            $noteType = in_array(strtolower($debitNote->transaction_type), ['credit', 'credit_note', 'cn']) ? 'credit' : 'debit';
+        } else {
+            $noteType = 'debit';
+        }
+
         $prefix = ($noteType === 'credit') ? 'CN' : 'DN';
-        
-        $rebateAmount = (float)($settlement->rebate_amount ?? ($debitNote ? $debitNote->taxable_amount : 0));
-        $invoiceValue = (float)($settlement->original_invoice_value > 0 
-            ? $settlement->original_invoice_value 
-            : (($settlement->invoice ? $settlement->invoice->taxable_amount : ($settlement->bran_value + $rebateAmount))));
+
+        // 2. Compute accurate rebate / bonus amount
+        $calculatedRebate = 0.0;
+        if ($origInv > 0) {
+            $calculatedRebate = round(abs(($origInv - $branVal) + $manualAdj), 2);
+        } elseif ($manualAdj != 0) {
+            $calculatedRebate = round(abs($manualAdj), 2);
+        }
+
+        $rebateAmount = ((float)$settlement->rebate_amount > 0)
+            ? (float)$settlement->rebate_amount
+            : ($calculatedRebate > 0 ? $calculatedRebate : (float)($debitNote ? $debitNote->taxable_amount : 0));
+
+        // 3. Synchronize existing debitNote in database if transaction_type or number is mismatched
+        if ($debitNote) {
+            $dnUpdates = [];
+            if ($debitNote->transaction_type !== $noteType) {
+                $dnUpdates['transaction_type'] = $noteType;
+            }
+            if ($noteType === 'credit' && str_starts_with($debitNote->debit_note_number, 'DN/')) {
+                $dnUpdates['debit_note_number'] = 'CN/' . substr($debitNote->debit_note_number, 3);
+            } elseif ($noteType === 'debit' && str_starts_with($debitNote->debit_note_number, 'CN/')) {
+                $dnUpdates['debit_note_number'] = 'DN/' . substr($debitNote->debit_note_number, 3);
+            }
+            if ($rebateAmount > 0 && abs((float)$debitNote->taxable_amount - $rebateAmount) > 0.01) {
+                $dnUpdates['taxable_amount'] = $rebateAmount;
+                $isInter = (bool)$settlement->is_interstate;
+                $cg = $isInter ? 0 : round(($rebateAmount * 2.5) / 100, 2);
+                $sg = $isInter ? 0 : round(($rebateAmount * 2.5) / 100, 2);
+                $ig = $isInter ? round(($rebateAmount * 5.0) / 100, 2) : 0;
+                $dnUpdates['cgst_amount'] = $cg;
+                $dnUpdates['sgst_amount'] = $sg;
+                $dnUpdates['igst_amount'] = $ig;
+                $dnUpdates['total_amount'] = round($rebateAmount + $cg + $sg + $ig, 2);
+            }
+            if ($noteType === 'credit' && ($debitNote->reason === 'Rebate on Oil Content Settlement' || empty($debitNote->reason))) {
+                $dnUpdates['reason'] = 'Quality Premium / Price Credit on Oil Content Settlement';
+            }
+            if (!empty($dnUpdates)) {
+                $debitNote->update($dnUpdates);
+                $debitNote->fill($dnUpdates);
+            }
+        }
+
+        // 4. Resolve Document Number
+        $docNumber = $debitNote?->debit_note_number;
+        if ($noteType === 'credit' && $docNumber && str_starts_with($docNumber, 'DN/')) {
+            $docNumber = 'CN/' . substr($docNumber, 3);
+        } elseif ($noteType === 'debit' && $docNumber && str_starts_with($docNumber, 'CN/')) {
+            $docNumber = 'DN/' . substr($docNumber, 3);
+        } elseif (!$docNumber) {
+            $cleanNum = preg_replace('/[^0-9]/', '', $settlement->settlement_number ?? '1019') ?: '1019';
+            $docNumber = $prefix . '/' . $cleanNum . '/' . ($settlement->financial_year ?? '26-27');
+        }
+
+        // 5. Party Invoice Value
+        $invoiceValue = (float)($origInv > 0 
+            ? $origInv 
+            : (($settlement->invoice ? (float)$settlement->invoice->taxable_amount : ($noteType === 'credit' ? max(0, $branVal - $rebateAmount) : ($branVal + $rebateAmount)))));
         
         $cgstRate = (float)($settlement->cgst_rate > 0 ? $settlement->cgst_rate : 2.5);
         $sgstRate = (float)($settlement->sgst_rate > 0 ? $settlement->sgst_rate : 2.5);
@@ -79,6 +151,21 @@ class PdfService
         $invTotal = round($invoiceValue + $invCgst + $invSgst + $invIgst, 2);
         $rebateTotal = round($rebateAmount + $rebateCgst + $rebateSgst + $rebateIgst, 2);
 
+        $rawRemarks = $debitNote?->remarks ?: $settlement->remarks;
+        if ($noteType === 'credit') {
+            if (empty($rawRemarks) || stripos($rawRemarks, 'debit') !== false) {
+                $finalRemarks = 'Auto-generated Credit Note posted to vendor ledger';
+            } else {
+                $finalRemarks = $rawRemarks;
+            }
+        } else {
+            if (empty($rawRemarks) || stripos($rawRemarks, 'credit') !== false) {
+                $finalRemarks = 'Auto-generated Debit Note posted to vendor ledger';
+            } else {
+                $finalRemarks = $rawRemarks;
+            }
+        }
+
         $debitNoteData = [
             'transaction_type' => $noteType,
             'note_type_label' => ($noteType === 'credit') ? 'CREDIT NOTE' : 'DEBIT NOTE',
@@ -86,7 +173,7 @@ class PdfService
             'particulars_label' => ($noteType === 'credit') 
                 ? 'Credit (Oil Content & Quality Bonus / Premium Rate Difference)' 
                 : 'Rebate (Oil Content & Quality Adjustment Difference)',
-            'debit_note_number' => $debitNote?->debit_note_number ?? ($prefix . '/' . preg_replace('/[^0-9]/', '', $settlement->settlement_number ?? '1019') . '/' . ($settlement->financial_year ?? '26-27')),
+            'debit_note_number' => $docNumber,
             'date' => $debitNote?->date ?? $settlement->settlement_date,
             'invoice_number' => $settlement->bill_number ?: ($settlement->invoice?->invoice_number ?: '68'),
             'invoice_date' => $settlement->bill_date ?: ($settlement->invoice?->invoice_date ?: $settlement->settlement_date),
@@ -101,7 +188,7 @@ class PdfService
             'rebate_sgst' => $rebateSgst,
             'rebate_igst' => $rebateIgst,
             'rebate_total' => $rebateTotal,
-            'remarks' => $debitNote?->remarks ?? $settlement->remarks,
+            'remarks' => $finalRemarks,
         ];
 
         $pdf = Pdf::loadView('pdf.settlement_bill', [
@@ -109,7 +196,13 @@ class PdfService
             'company' => $company,
             'debitNote' => $debitNote,
             'debitNoteData' => $debitNoteData,
-        ])->setPaper('a4', 'portrait');
+        ])
+        ->setPaper('a4', 'portrait')
+        ->setOption([
+            'isHtml5ParserEnabled' => true,
+            'isRemoteEnabled' => true,
+            'defaultFont' => 'DejaVu Sans',
+        ]);
 
         return $pdf;
     }

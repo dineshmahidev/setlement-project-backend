@@ -264,7 +264,7 @@ class InventoryService
 
             // Transfer Out at source
             InventoryTransaction::create([
-                'transaction_number' => $transfer->transfer_number,
+                'transaction_number' => $transfer->transfer_number . '-OUT',
                 'date' => $transfer->date,
                 'branch_id' => $from,
                 'item_id' => $transfer->item_id,
@@ -284,10 +284,10 @@ class InventoryService
                 'created_by' => $userId,
             ]);
 
-            // Transfer In at destination — same transfer number.
+            // Transfer In at destination
             // Company-wide stock unchanged (out + in cancel out).
             InventoryTransaction::create([
-                'transaction_number' => $transfer->transfer_number,
+                'transaction_number' => $transfer->transfer_number . '-IN',
                 'date' => $transfer->date,
                 'branch_id' => $to,
                 'item_id' => $transfer->item_id,
@@ -401,28 +401,58 @@ class InventoryService
     /**
      * Current stock per item/branch derived from transactions (spec §23).
      */
-    public function currentStock(?int $branchId = null): array
+    public function currentStock(?int $branchId = null, ?string $dateFrom = null, ?string $dateTo = null): array
     {
         $query = Item::with(['unit', 'category'])
             ->where('status', 'ACTIVE')
             ->get();
 
-        return $query->map(function (Item $item) use ($branchId) {
+        return $query->map(function (Item $item) use ($branchId, $dateFrom, $dateTo) {
             $tx = InventoryTransaction::where('item_id', $item->id)
                 ->where('status', 'POSTED');
             if ($branchId) {
                 $tx->where('branch_id', $branchId);
             }
 
-            $in = (clone $tx)->where('type', 'STOCK_IN')->sum('quantity')
-                + (clone $tx)->where('type', 'TRANSFER_IN')->sum('quantity')
-                + (clone $tx)->where('type', 'ADJUSTMENT_IN')->sum('quantity');
+            $inQ = (clone $tx);
+            $outQ = (clone $tx);
 
-            $out = (clone $tx)->where('type', 'STOCK_OUT')->sum('quantity')
-                + (clone $tx)->where('type', 'TRANSFER_OUT')->sum('quantity')
-                + (clone $tx)->where('type', 'ADJUSTMENT_OUT')->sum('quantity');
+            if ($dateFrom) {
+                $inQ->whereDate('date', '>=', $dateFrom);
+                $outQ->whereDate('date', '>=', $dateFrom);
+            }
+            if ($dateTo) {
+                $inQ->whereDate('date', '<=', $dateTo);
+                $outQ->whereDate('date', '<=', $dateTo);
+            }
 
-            $available = (float) $in - (float) $out;
+            $in = (clone $inQ)->where('type', 'STOCK_IN')->sum('quantity')
+                + (clone $inQ)->where('type', 'TRANSFER_IN')->sum('quantity')
+                + (clone $inQ)->where('type', 'ADJUSTMENT_IN')->sum('quantity');
+
+            $out = (clone $outQ)->where('type', 'STOCK_OUT')->sum('quantity')
+                + (clone $outQ)->where('type', 'TRANSFER_OUT')->sum('quantity')
+                + (clone $outQ)->where('type', 'ADJUSTMENT_OUT')->sum('quantity');
+
+            // Cumulative available stock as of dateTo (or all time if no dateTo)
+            $allTx = InventoryTransaction::where('item_id', $item->id)
+                ->where('status', 'POSTED');
+            if ($branchId) {
+                $allTx->where('branch_id', $branchId);
+            }
+            if ($dateTo) {
+                $allTx->whereDate('date', '<=', $dateTo);
+            }
+
+            $cumIn = (clone $allTx)->where('type', 'STOCK_IN')->sum('quantity')
+                + (clone $allTx)->where('type', 'TRANSFER_IN')->sum('quantity')
+                + (clone $allTx)->where('type', 'ADJUSTMENT_IN')->sum('quantity');
+
+            $cumOut = (clone $allTx)->where('type', 'STOCK_OUT')->sum('quantity')
+                + (clone $allTx)->where('type', 'TRANSFER_OUT')->sum('quantity')
+                + (clone $allTx)->where('type', 'ADJUSTMENT_OUT')->sum('quantity');
+
+            $available = (float) $cumIn - (float) $cumOut;
             $min = (float) $item->min_stock_level;
 
             $status = 'Normal';
@@ -438,7 +468,7 @@ class InventoryService
                 'item_name' => $item->name,
                 'unit' => $item->unit?->code,
                 'category' => $item->category?->name,
-                'opening' => 0,
+                'opening' => round((float)$cumIn - (float)$cumOut - ((float)$in - (float)$out), 3),
                 'total_in' => round((float) $in, 3),
                 'total_out' => round((float) $out, 3),
                 'available' => round($available, 3),
