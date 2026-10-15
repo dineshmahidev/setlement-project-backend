@@ -322,35 +322,23 @@
                     <tbody>
                         <tr>
                             <td style="width: 60%; font-weight: bold;">Oil Content</td>
-                            <td style="width: 40%; font-weight: bold; text-align: center;">{{ $settlement->oil_content ? number_format((float)$settlement->oil_content, 2) . ' %' : '-' }}</td>
+                            <td style="width: 40%; font-weight: bold; text-align: center;">{{ $settlement->oil_content ? (is_numeric($settlement->oil_content) ? number_format((float)$settlement->oil_content, 2) . ' %' : $settlement->oil_content) : '-' }}</td>
                         </tr>
                         <tr>
                             <td>FFA</td>
-                            <td class="text-center">{{ $settlement->ffa ? number_format((float)$settlement->ffa, 2) : '-' }}</td>
+                            <td class="text-center">{{ $settlement->ffa ? (is_numeric($settlement->ffa) ? number_format((float)$settlement->ffa, 2) : $settlement->ffa) : '-' }}</td>
                         </tr>
                         <tr>
                             <td>SS (Sand Silica)</td>
-                            <td class="text-center">{{ $settlement->ss ? number_format((float)$settlement->ss, 2) : '-' }}</td>
+                            <td class="text-center">{{ $settlement->ss ? (is_numeric($settlement->ss) ? number_format((float)$settlement->ss, 2) : $settlement->ss) : '-' }}</td>
                         </tr>
                         <tr>
                             <td>Fibre</td>
-                            <td class="text-center">{{ $settlement->fibre ? number_format((float)$settlement->fibre, 2) : '-' }}</td>
+                            <td class="text-center">{{ $settlement->fibre ? (is_numeric($settlement->fibre) ? number_format((float)$settlement->fibre, 2) : $settlement->fibre) : '-' }}</td>
                         </tr>
                         <tr>
                             <td>Moisture</td>
-                            <td class="text-center">{{ $settlement->moisture ? number_format((float)$settlement->moisture, 2) : '-' }}</td>
-                        </tr>
-                        <tr>
-                            <td>IV</td>
-                            <td class="text-center">{{ $settlement->iv ? number_format((float)$settlement->iv, 3) : '-' }}</td>
-                        </tr>
-                        <tr>
-                            <td>Calcium</td>
-                            <td class="text-center">{{ $settlement->calcium ? number_format((float)$settlement->calcium, 2) : '0' }}</td>
-                        </tr>
-                        <tr>
-                            <td>Protein</td>
-                            <td class="text-center">{{ $settlement->protein ? number_format((float)$settlement->protein, 2) : '0' }}</td>
+                            <td class="text-center">{{ $settlement->moisture ? (is_numeric($settlement->moisture) ? number_format((float)$settlement->moisture, 2) : $settlement->moisture) : '-' }}</td>
                         </tr>
                     </tbody>
                 </table>
@@ -482,14 +470,14 @@
                 <tr class="bg-head-cream">
                     <th style="width: 8%;" class="text-center">S.No</th>
                     <th style="width: 67%;">Particulars</th>
-                    <th style="width: 25%;" class="text-right">Amount</th>
+                    <th style="width: 25%;" class="text-right">Amount (Rs.)</th>
                 </tr>
             </thead>
             <tbody>
                 <tr>
                     <td class="text-center text-bold">1</td>
                     <td>{{ $debitNoteData['particulars_label'] ?? 'Rebate (Oil Content & Quality Adjustment Difference)' }}</td>
-                    <td class="text-right text-bold">{{ number_format((float)$debitNoteData['rebate_amount'], 2) }}</td>
+                    <td class="text-right text-bold">Rs. {{ number_format((float)$debitNoteData['rebate_amount'], 2) }}</td>
                 </tr>
             </tbody>
         </table>
@@ -503,23 +491,23 @@
                         <tbody>
                             <tr>
                                 <td style="width: 55%; font-weight: bold;">Party Invoice</td>
-                                <td class="text-right text-bold">{{ number_format((float)$debitNoteData['invoice_value'], 2) }}</td>
+                                <td class="text-right text-bold">Rs. {{ number_format((float)$debitNoteData['invoice_value'], 2) }}</td>
                             </tr>
                             <tr>
                                 <td>CGST</td>
-                                <td class="text-right">{{ number_format((float)$debitNoteData['inv_cgst'], 2) }}</td>
+                                <td class="text-right">Rs. {{ number_format((float)$debitNoteData['inv_cgst'], 2) }}</td>
                             </tr>
                             <tr>
                                 <td>SGST</td>
-                                <td class="text-right">{{ number_format((float)$debitNoteData['inv_sgst'], 2) }}</td>
+                                <td class="text-right">Rs. {{ number_format((float)$debitNoteData['inv_sgst'], 2) }}</td>
                             </tr>
                             <tr>
                                 <td>IGST</td>
-                                <td class="text-right">{{ number_format((float)$debitNoteData['inv_igst'], 2) }}</td>
+                                <td class="text-right">Rs. {{ number_format((float)$debitNoteData['inv_igst'], 2) }}</td>
                             </tr>
                             <tr class="bg-light-cream">
                                 <td class="text-bold text-navy">Total Party Invoice</td>
-                                <td class="text-right text-bold text-navy">{{ number_format((float)$debitNoteData['inv_total'], 2) }}</td>
+                                <td class="text-right text-bold text-navy">Rs. {{ number_format((float)$debitNoteData['inv_total'], 2) }}</td>
                             </tr>
                         </tbody>
                     </table>
@@ -533,23 +521,23 @@
                         <tbody>
                             <tr class="bg-light-cream">
                                 <td style="width: 55%;" class="text-bold">{{ ($debitNoteData['transaction_type'] ?? 'debit') === 'credit' ? 'Total (Credit)' : 'Total (Debit)' }}</td>
-                                <td class="text-right text-bold">{{ number_format((float)$debitNoteData['rebate_amount'], 2) }}</td>
+                                <td class="text-right text-bold">Rs. {{ number_format((float)$debitNoteData['rebate_amount'], 2) }}</td>
                             </tr>
                             <tr>
                                 <td>CGST</td>
-                                <td class="text-right">{{ number_format((float)$debitNoteData['rebate_cgst'], 2) }}</td>
+                                <td class="text-right">Rs. {{ number_format((float)$debitNoteData['rebate_cgst'], 2) }}</td>
                             </tr>
                             <tr>
                                 <td>SGST</td>
-                                <td class="text-right">{{ number_format((float)$debitNoteData['rebate_sgst'], 2) }}</td>
+                                <td class="text-right">Rs. {{ number_format((float)$debitNoteData['rebate_sgst'], 2) }}</td>
                             </tr>
                             <tr>
                                 <td>IGST</td>
-                                <td class="text-right">{{ number_format((float)$debitNoteData['rebate_igst'], 2) }}</td>
+                                <td class="text-right">Rs. {{ number_format((float)$debitNoteData['rebate_igst'], 2) }}</td>
                             </tr>
                             <tr class="net-payable-row">
                                 <td class="text-bold text-navy">Total</td>
-                                <td class="text-right text-bold text-navy">{{ number_format((float)$debitNoteData['rebate_total'], 2) }}</td>
+                                <td class="text-right text-bold text-navy">Rs. {{ number_format((float)$debitNoteData['rebate_total'], 2) }}</td>
                             </tr>
                         </tbody>
                     </table>

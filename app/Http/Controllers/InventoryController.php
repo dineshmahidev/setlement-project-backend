@@ -52,9 +52,11 @@ class InventoryController extends Controller
         $branchId = $request->branch_id ? (int) $request->branch_id : null;
         $dateFrom = $request->date_from ?: null;
         $dateTo = $request->date_to ?: null;
+        $companyId = $this->activeCompanyId();
+        $hideZero = $request->boolean('hide_zero');
 
         if (! $branchId && $ids = $this->allowedBranchIds()) {
-            $all = $this->service->currentStock(null, $dateFrom, $dateTo);
+            $all = $this->service->currentStock(null, $dateFrom, $dateTo, $companyId, false);
             $filtered = [];
             foreach ($all as $row) {
                 $inq = InventoryTransaction::where('item_id', $row['item_id'])
@@ -84,18 +86,26 @@ class InventoryController extends Controller
                 $avail = round((float) $cumIn - (float) $cumOut, 3);
                 $min = (float) $row['min_stock_level'];
                 $status = $avail <= 0 ? 'Out of Stock' : ($min > 0 && $avail <= $min ? 'Low Stock' : 'Normal');
+                $totIn = round((float)$in, 3);
+                $totOut = round((float)$out, 3);
+                $opening = round((float)$cumIn - (float)$cumOut - ((float)$in - (float)$out), 3);
+
+                if ($hideZero && abs($avail) < 0.0001 && abs($totIn) < 0.0001 && abs($totOut) < 0.0001 && abs($opening) < 0.0001) {
+                    continue;
+                }
+
                 $filtered[] = $row + [
                     'available' => $avail,
-                    'total_in' => round((float)$in, 3),
-                    'total_out' => round((float)$out, 3),
-                    'opening' => round((float)$cumIn - (float)$cumOut - ((float)$in - (float)$out), 3),
+                    'total_in' => $totIn,
+                    'total_out' => $totOut,
+                    'opening' => $opening,
                     'status' => $status
                 ];
             }
             return response()->json($filtered);
         }
 
-        return response()->json($this->service->currentStock($branchId, $dateFrom, $dateTo));
+        return response()->json($this->service->currentStock($branchId, $dateFrom, $dateTo, $companyId, $hideZero));
     }
 
     public function stockPdf(Request $request)

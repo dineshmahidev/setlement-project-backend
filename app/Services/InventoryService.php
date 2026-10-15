@@ -401,13 +401,16 @@ class InventoryService
     /**
      * Current stock per item/branch derived from transactions (spec §23).
      */
-    public function currentStock(?int $branchId = null, ?string $dateFrom = null, ?string $dateTo = null): array
+    public function currentStock(?int $branchId = null, ?string $dateFrom = null, ?string $dateTo = null, ?int $companyId = null, bool $hideZero = false): array
     {
-        $query = Item::with(['unit', 'category'])
-            ->where('status', 'ACTIVE')
-            ->get();
+        $itemQ = Item::with(['unit', 'category'])
+            ->where('status', 'ACTIVE');
+        if ($companyId) {
+            $itemQ->where('company_id', $companyId);
+        }
+        $query = $itemQ->get();
 
-        return $query->map(function (Item $item) use ($branchId, $dateFrom, $dateTo) {
+        $rows = $query->map(function (Item $item) use ($branchId, $dateFrom, $dateTo) {
             $tx = InventoryTransaction::where('item_id', $item->id)
                 ->where('status', 'POSTED');
             if ($branchId) {
@@ -476,6 +479,17 @@ class InventoryService
                 'max_stock_level' => (float) $item->max_stock_level,
                 'status' => $status,
             ];
-        })->values()->all();
+        });
+
+        if ($hideZero) {
+            $rows = $rows->filter(function ($r) {
+                return abs((float)$r['available']) > 0.0001
+                    || abs((float)$r['total_in']) > 0.0001
+                    || abs((float)$r['total_out']) > 0.0001
+                    || abs((float)$r['opening']) > 0.0001;
+            });
+        }
+
+        return $rows->values()->all();
     }
 }
