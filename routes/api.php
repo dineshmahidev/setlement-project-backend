@@ -75,6 +75,8 @@ Route::middleware(['auth:sanctum', 'company.scope'])->group(function () {
     // Vendors
     Route::get('/vendors/search', [VendorController::class, 'search']);
     Route::post('/vendors/lookup-gstin', [VendorController::class, 'lookupGstin']);
+    Route::patch('/vendors/{vendor}/status', [VendorController::class, 'toggleStatus']);
+    Route::post('/vendors/{vendor}/toggle-status', [VendorController::class, 'toggleStatus']);
     Route::apiResource('vendors', VendorController::class);
 
     // Products & Items & Units

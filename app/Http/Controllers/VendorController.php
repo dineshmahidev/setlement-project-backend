@@ -34,7 +34,11 @@ class VendorController extends Controller
         }
 
         if ($request->filled('status')) {
-            $query->where('status', $request->status);
+            if ($request->status !== 'all') {
+                $query->where('status', $request->status);
+            }
+        } else {
+            $query->where('status', 'active');
         }
 
         if ($request->boolean('all')) {
@@ -136,25 +140,62 @@ class VendorController extends Controller
         ]);
     }
 
+    public function toggleStatus(Request $request, Vendor $vendor)
+    {
+        $this->guardCompanyOwnership($vendor);
+        $newStatus = $request->input('status', $vendor->status === 'active' ? 'inactive' : 'active');
+        if (! in_array($newStatus, ['active', 'inactive'], true)) {
+            return response()->json(['success' => false, 'message' => 'Invalid status'], 422);
+        }
+
+        $old = $vendor->toArray();
+        $vendor->update(['status' => $newStatus]);
+
+        AuditLog::logAction('status_changed', 'Vendor', $vendor->id, $vendor->vendor_code, $old, $vendor->toArray(), "Vendor marked {$newStatus}");
+
+        return response()->json([
+            'success' => true,
+            'message' => "Vendor is now {$newStatus}",
+            'data' => $vendor,
+        ]);
+    }
+
     public function destroy(Vendor $vendor)
     {
         $this->guardCompanyOwnership($vendor);
 
-        if ($vendor->settlements()->exists() || $vendor->invoices()->exists() || $vendor->debitNotes()->exists()) {
+        $hasLinkedRecords = $vendor->settlements()->exists()
+            || $vendor->invoices()->exists()
+            || $vendor->debitNotes()->exists()
+            || \App\Models\Inward::where('vendor_id', $vendor->id)->exists()
+            || \App\Models\Outward::where('party_id', $vendor->id)->exists()
+            || \App\Models\Lot::where('vendor_id', $vendor->id)->exists()
+            || \App\Models\InventoryTransaction::where('vendor_id', $vendor->id)->orWhere('party_id', $vendor->id)->exists();
+
+        if ($hasLinkedRecords) {
             return response()->json([
                 'success' => false,
-                'message' => 'Cannot delete vendor with financial transactions. You can set status to inactive.',
+                'has_transactions' => true,
+                'message' => 'Cannot delete vendor with existing transactions or records. You can set status to inactive instead.',
             ], 422);
         }
 
-        $old = $vendor->toArray();
-        $vendor->delete();
+        try {
+            $old = $vendor->toArray();
+            $vendor->delete();
 
-        AuditLog::logAction('deleted', 'Vendor', $vendor->id, $vendor->vendor_code, $old, null, 'Vendor deleted');
+            AuditLog::logAction('deleted', 'Vendor', $vendor->id, $vendor->vendor_code, $old, null, 'Vendor deleted');
 
-        return response()->json([
-            'success' => true,
-            'message' => 'Vendor deleted successfully',
-        ]);
+            return response()->json([
+                'success' => true,
+                'message' => 'Vendor deleted successfully',
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'has_transactions' => true,
+                'message' => 'Cannot delete vendor with linked records. Please set status to inactive instead.',
+            ], 422);
+        }
     }
 }

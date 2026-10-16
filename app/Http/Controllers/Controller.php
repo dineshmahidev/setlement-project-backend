@@ -55,6 +55,59 @@ abstract class Controller
         return $query;
     }
 
+    /**
+     * Get IDs of all vendors marked as inactive.
+     */
+    protected function inactiveVendorIds(): array
+    {
+        return \App\Models\Vendor::whereRaw('LOWER(status) = ?', ['inactive'])->pluck('id')->filter()->all();
+    }
+
+    /**
+     * Get names of all vendors marked as inactive.
+     */
+    protected function inactiveVendorNames(): array
+    {
+        return \App\Models\Vendor::whereRaw('LOWER(status) = ?', ['inactive'])->pluck('vendor_name')->filter()->all();
+    }
+
+    /**
+     * Scope an inventory transactions query to exclude records associated with inactive vendors.
+     */
+    protected function scopeActiveVendorTransactions($query)
+    {
+        $inactiveIds = $this->inactiveVendorIds();
+        $inactiveNames = $this->inactiveVendorNames();
+        if (empty($inactiveIds) && empty($inactiveNames)) {
+            return $query;
+        }
+
+        if (!empty($inactiveIds)) {
+            $query->where(function ($q) use ($inactiveIds) {
+                $q->whereNull('vendor_id')->orWhereNotIn('vendor_id', $inactiveIds);
+            })->where(function ($q) use ($inactiveIds) {
+                $q->whereNull('party_id')->orWhereNotIn('party_id', $inactiveIds);
+            })->whereNot(function ($q) use ($inactiveIds) {
+                $q->whereIn('reference_type', ['INWARD', 'INWARD_CANCEL'])
+                  ->whereIn('reference_id', \App\Models\InwardEntry::whereIn('party_id', $inactiveIds)->select('id'));
+            })->whereNot(function ($q) use ($inactiveIds) {
+                $q->whereIn('reference_type', ['OUTWARD', 'OUTWARD_CANCEL'])
+                  ->whereIn('reference_id', \App\Models\OutwardEntry::whereIn('party_id', $inactiveIds)->select('id'));
+            })->whereNot(function ($q) use ($inactiveIds) {
+                $q->where('reference_type', 'SETTLEMENT_BILL')
+                  ->whereIn('reference_id', \App\Models\Settlement::whereIn('vendor_id', $inactiveIds)->select('id'));
+            });
+        }
+
+        if (!empty($inactiveNames)) {
+            $query->where(function ($q) use ($inactiveNames) {
+                $q->whereNull('customer')->orWhereNotIn('customer', $inactiveNames);
+            });
+        }
+
+        return $query;
+    }
+
     protected function allowedBranchIds(): ?array
     {
         $user = request()->user();

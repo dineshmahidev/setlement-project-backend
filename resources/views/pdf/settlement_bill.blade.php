@@ -284,7 +284,7 @@
                     <tr>
                         <td style="border: none; border-bottom: 0.6pt solid #cbd5e0; border-right: 0.6pt solid #cbd5e0; padding: 1.4px 4px; font-weight: bold;">Cont.Unit Rate</td>
                         <td style="border: none; border-bottom: 0.6pt solid #cbd5e0; padding: 1.4px 4px; font-weight: bold;">
-                            {{ number_format((float)$settlement->contract_unit_rate, 2) }} {{ $settlement->rate_basis === 'per_10kg' ? 'PP Bag' : ($settlement->rate_basis === 'per_mt' ? 'Per MT' : 'Per Kg') }}
+                            {{ number_format((float)$settlement->contract_unit_rate, 2) }}
                         </td>
                     </tr>
                     <tr>

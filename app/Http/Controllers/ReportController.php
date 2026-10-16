@@ -121,7 +121,10 @@ class ReportController extends Controller
     protected function getInwardReport($from, $to, $branchId)
     {
         $q = \App\Models\InwardEntry::with(['party:id,vendor_name', 'branch:id,branch_name', 'items.item:id,name,code'])
-            ->whereBetween('date', [$from, $to])->where('company_id', $this->companyId());
+            ->whereBetween('date', [$from, $to])->where('company_id', $this->companyId())
+            ->where(function ($query) {
+                $query->whereNull('party_id')->orWhereHas('party', fn ($pq) => $pq->where('status', 'active'));
+            });
         if ($branchId) $q->whereIn('branch_id', (array) $branchId);
         return $q->orderBy('date')->get()->map(fn ($e) => [
             'entry_number' => $e->entry_number, 'date' => $e->date, 'godown' => $e->branch?->branch_name,
@@ -133,7 +136,10 @@ class ReportController extends Controller
     protected function getOutwardReport($from, $to, $branchId)
     {
         $q = \App\Models\OutwardEntry::with(['party:id,vendor_name', 'branch:id,branch_name', 'items.item:id,name,code'])
-            ->whereBetween('date', [$from, $to])->where('company_id', $this->companyId());
+            ->whereBetween('date', [$from, $to])->where('company_id', $this->companyId())
+            ->where(function ($query) {
+                $query->whereNull('party_id')->orWhereHas('party', fn ($pq) => $pq->where('status', 'active'));
+            });
         if ($branchId) $q->whereIn('branch_id', (array) $branchId);
         return $q->orderBy('date')->get()->map(fn ($e) => [
             'entry_number' => $e->entry_number, 'date' => $e->date, 'godown' => $e->branch?->branch_name,
@@ -179,7 +185,8 @@ class ReportController extends Controller
     protected function getSettlementReport($from, $to, $branchId, $vendorId, $productId)
     {
         $query = Settlement::with(['branch', 'vendor', 'product'])
-            ->whereBetween('settlement_date', [$from, $to]);
+            ->whereBetween('settlement_date', [$from, $to])
+            ->whereHas('vendor', fn ($q) => $q->where('status', 'active'));
 
         if ($branchId) $query->whereIn('branch_id', (array) $branchId);
         if ($vendorId) $query->where('vendor_id', $vendorId);
@@ -191,7 +198,8 @@ class ReportController extends Controller
     protected function getDebitNoteReport($from, $to, $branchId, $vendorId)
     {
         $query = DebitNote::with(['branch', 'vendor'])
-            ->whereBetween('date', [$from, $to]);
+            ->whereBetween('date', [$from, $to])
+            ->whereHas('vendor', fn ($q) => $q->where('status', 'active'));
 
         if ($branchId) $query->whereIn('branch_id', (array) $branchId);
         if ($vendorId) $query->where('vendor_id', $vendorId);
@@ -202,7 +210,8 @@ class ReportController extends Controller
     protected function getInvoiceReport($from, $to, $branchId, $vendorId)
     {
         $query = Invoice::with(['branch', 'vendor', 'product'])
-            ->whereBetween('invoice_date', [$from, $to]);
+            ->whereBetween('invoice_date', [$from, $to])
+            ->whereHas('vendor', fn ($q) => $q->where('status', 'active'));
 
         if ($branchId) $query->whereIn('branch_id', (array) $branchId);
         if ($vendorId) $query->where('vendor_id', $vendorId);
@@ -295,7 +304,8 @@ class ReportController extends Controller
         $query = Settlement::with(['branch', 'vendor'])
             ->where('rebate_amount', '>', 0)
             ->where('status', '!=', 'cancelled')
-            ->whereBetween('settlement_date', [$from, $to]);
+            ->whereBetween('settlement_date', [$from, $to])
+            ->whereHas('vendor', fn ($q) => $q->where('status', 'active'));
 
         if ($branchId) $query->whereIn('branch_id', (array) $branchId);
         if ($vendorId) $query->where('vendor_id', $vendorId);

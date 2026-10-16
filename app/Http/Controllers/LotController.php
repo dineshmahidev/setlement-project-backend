@@ -32,6 +32,14 @@ class LotController extends Controller
         if ($request->filled('oil_min')) $q->where('oil_pct', '>=', $request->oil_min);
         if ($request->filled('oil_max')) $q->where('oil_pct', '<=', $request->oil_max);
 
+        $inactiveIds = $this->inactiveVendorIds();
+        if (!empty($inactiveIds)) {
+            $q->whereNot(function ($qq) use ($inactiveIds) {
+                $qq->where('source', 'INWARD')
+                   ->whereIn('source_id', \App\Models\InwardEntry::whereIn('party_id', $inactiveIds)->select('id'));
+            });
+        }
+
         return response()->json($q->paginate($request->get('per_page', 20)));
     }
 

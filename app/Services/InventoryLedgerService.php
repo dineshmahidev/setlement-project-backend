@@ -634,6 +634,14 @@ class InventoryLedgerService
         if (!empty($filters['oil_min'])) $q->where('oil_pct', '>=', $filters['oil_min']);
         if (!empty($filters['oil_max'])) $q->where('oil_pct', '<=', $filters['oil_max']);
 
+        $inactiveIds = \App\Models\Vendor::whereRaw('LOWER(status) = ?', ['inactive'])->pluck('id')->filter()->all();
+        if (!empty($inactiveIds)) {
+            $q->whereNot(function ($qq) use ($inactiveIds) {
+                $qq->where('source', 'INWARD')
+                   ->whereIn('source_id', \App\Models\InwardEntry::whereIn('party_id', $inactiveIds)->select('id'));
+            });
+        }
+
         $lots = $q->orderBy('branch_id')->orderBy('item_id')->orderBy('lot_number')->get();
 
         // Aggregate per item+godown+oil-band
@@ -675,11 +683,32 @@ class InventoryLedgerService
         if ($from) $tx->whereDate('date', '>=', $from);
         if ($to) $tx->whereDate('date', '<=', $to);
 
+        $lots = Lot::where('company_id', $companyId)->where('status', 'OPEN');
+        if ($branchId) $lots->where('branch_id', $branchId);
+
+        $inactiveIds = \App\Models\Vendor::whereRaw('LOWER(status) = ?', ['inactive'])->pluck('id')->filter()->all();
+        if (!empty($inactiveIds)) {
+            $tx->where(function ($q) use ($inactiveIds) {
+                $q->whereNull('vendor_id')->orWhereNotIn('vendor_id', $inactiveIds);
+            })->where(function ($q) use ($inactiveIds) {
+                $q->whereNull('party_id')->orWhereNotIn('party_id', $inactiveIds);
+            })->whereNot(function ($q) use ($inactiveIds) {
+                $q->whereIn('reference_type', ['INWARD', 'INWARD_CANCEL'])
+                  ->whereIn('reference_id', \App\Models\InwardEntry::whereIn('party_id', $inactiveIds)->select('id'));
+            })->whereNot(function ($q) use ($inactiveIds) {
+                $q->whereIn('reference_type', ['OUTWARD', 'OUTWARD_CANCEL'])
+                  ->whereIn('reference_id', \App\Models\OutwardEntry::whereIn('party_id', $inactiveIds)->select('id'));
+            });
+
+            $lots->whereNot(function ($qq) use ($inactiveIds) {
+                $qq->where('source', 'INWARD')
+                   ->whereIn('source_id', \App\Models\InwardEntry::whereIn('party_id', $inactiveIds)->select('id'));
+            });
+        }
+
         $in = (clone $tx)->whereIn('type', ['STOCK_IN', 'TRANSFER_IN', 'ADJUSTMENT_IN', 'PRODUCTION_OUT'])->sum('quantity');
         $out = (clone $tx)->whereIn('type', ['STOCK_OUT', 'TRANSFER_OUT', 'ADJUSTMENT_OUT', 'PRODUCTION_IN'])->sum('quantity');
 
-        $lots = Lot::where('company_id', $companyId)->where('status', 'OPEN');
-        if ($branchId) $lots->where('branch_id', $branchId);
         $activeLots = (clone $lots)->where('available_qty', '>', 0)->count();
         $stockQty = (clone $lots)->where('available_qty', '>', 0)->sum('available_qty');
         $stockValue = (clone $lots)->where('available_qty', '>', 0)->sum('stock_value');

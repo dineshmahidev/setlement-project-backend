@@ -20,6 +20,7 @@ class InventoryController extends Controller
             ->orderByDesc('date')->orderByDesc('id');
 
         $this->scopeBranches($query);
+        $this->scopeActiveVendorTransactions($query);
 
         if ($request->filled('type')) $query->where('type', $request->type);
         if ($request->filled('item_id')) $query->where('item_id', $request->item_id);
@@ -70,6 +71,7 @@ class InventoryController extends Controller
         $rows = [];
         foreach ($items as $item) {
             $tx = InventoryTransaction::where('item_id', $item->id)->where('status', 'POSTED');
+            $this->scopeActiveVendorTransactions($tx);
             if ($branchId) {
                 $tx->where('branch_id', $branchId);
             } elseif ($allowedBranchIds) {
@@ -98,6 +100,7 @@ class InventoryController extends Controller
 
             // Cumulative available stock as of dateTo (or all time if no dateTo)
             $allTx = InventoryTransaction::where('item_id', $item->id)->where('status', 'POSTED');
+            $this->scopeActiveVendorTransactions($allTx);
             if ($branchId) {
                 $allTx->where('branch_id', $branchId);
             } elseif ($allowedBranchIds) {
@@ -215,6 +218,7 @@ class InventoryController extends Controller
             ->where('status', 'POSTED');
 
         $this->scopeBranches($query);
+        $this->scopeActiveVendorTransactions($query);
 
         if ($request->filled('item_id')) $query->where('item_id', $request->item_id);
         if ($request->filled('branch_id')) $query->where('branch_id', $request->branch_id);
@@ -228,6 +232,7 @@ class InventoryController extends Controller
             $priorQuery = InventoryTransaction::where('status', 'POSTED')
                 ->whereDate('date', '<', $request->date_from);
             $this->scopeBranches($priorQuery);
+            $this->scopeActiveVendorTransactions($priorQuery);
             if ($request->filled('item_id')) $priorQuery->where('item_id', $request->item_id);
             if ($request->filled('branch_id')) $priorQuery->where('branch_id', $request->branch_id);
             $priorBalances = $priorQuery->selectRaw("CONCAT(branch_id, '_', item_id) as k, SUM(signed_quantity) as total_qty")
@@ -319,6 +324,7 @@ class InventoryController extends Controller
             ->where('status', 'POSTED');
 
         $this->scopeBranches($query);
+        $this->scopeActiveVendorTransactions($query);
 
         if ($request->filled('item_id')) $query->where('item_id', $request->item_id);
         if ($request->filled('branch_id')) $query->where('branch_id', $request->branch_id);
@@ -332,6 +338,7 @@ class InventoryController extends Controller
             $priorQuery = InventoryTransaction::where('status', 'POSTED')
                 ->whereDate('date', '<', $request->date_from);
             $this->scopeBranches($priorQuery);
+            $this->scopeActiveVendorTransactions($priorQuery);
             if ($request->filled('item_id')) $priorQuery->where('item_id', $request->item_id);
             if ($request->filled('branch_id')) $priorQuery->where('branch_id', $request->branch_id);
             $priorBalances = $priorQuery->selectRaw("CONCAT(branch_id, '_', item_id) as k, SUM(signed_quantity) as total_qty")
@@ -760,7 +767,8 @@ class InventoryController extends Controller
 
         // 1. Query Settlements (Vendor Deliveries / Stock Inlets)
         $settlementsQuery = \App\Models\Settlement::with(['vendor', 'product', 'branch'])
-            ->whereIn('status', ['APPROVED', 'POSTED']);
+            ->whereIn('status', ['APPROVED', 'POSTED'])
+            ->whereHas('vendor', fn ($q) => $q->whereRaw('LOWER(status) != ?', ['inactive']));
         $this->scopeBranches($settlementsQuery);
         if ($branchId) {
             $settlementsQuery->where('branch_id', $branchId);
@@ -783,6 +791,7 @@ class InventoryController extends Controller
         $txQuery = InventoryTransaction::with(['vendor', 'item', 'branch', 'vehicle'])
             ->where('status', 'POSTED');
         $this->scopeBranches($txQuery);
+        $this->scopeActiveVendorTransactions($txQuery);
         if ($branchId) {
             $txQuery->where('branch_id', $branchId);
         }

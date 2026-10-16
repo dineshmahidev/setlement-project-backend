@@ -19,6 +19,13 @@ class OutwardController extends Controller
         if ($companyId) $q->where('company_id', $companyId);
         else $this->scopeBranches($q, 'branch_id');
 
+        if (! $request->filled('party_id')) {
+            $q->where(function ($query) {
+                $query->whereNull('party_id')
+                      ->orWhereHas('party', fn ($pq) => $pq->where('status', 'active'));
+            });
+        }
+
         if ($request->filled('status')) $q->where('status', $request->status);
         if ($request->filled('dispatch_type')) $q->where('dispatch_type', $request->dispatch_type);
         if ($request->filled('branch_id')) $q->where('branch_id', $request->branch_id);

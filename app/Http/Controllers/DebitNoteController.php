@@ -30,6 +30,12 @@ class DebitNoteController extends Controller
         // Debit notes are isolated through their branch (which belongs to a company)
         $query = $this->scopeBranches(DebitNote::with(['branch', 'vendor', 'settlement', 'invoice', 'creator']));
 
+        if (! $request->filled('vendor_id')) {
+            $query->whereHas('vendor', function ($vq) {
+                $vq->where('status', 'active');
+            });
+        }
+
         if ($request->filled('branch_id')) {
             $query->where('branch_id', $request->branch_id);
         }

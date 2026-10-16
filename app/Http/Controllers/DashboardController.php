@@ -62,7 +62,8 @@ class DashboardController extends Controller
         $totalBranches = $totalBranchesQuery->count();
 
         $todaySettlementQuery = Settlement::whereDate('settlement_date', $today)
-            ->where('status', '!=', 'cancelled');
+            ->where('status', '!=', 'cancelled')
+            ->whereHas('vendor', fn ($q) => $q->where('status', 'active'));
         $applyBranch($todaySettlementQuery, 'branch_id');
 
         $todaySettlementsCount = (clone $todaySettlementQuery)->count();
@@ -70,13 +71,15 @@ class DashboardController extends Controller
 
         // Total settlements in date range
         $periodSettlementQuery = Settlement::where('status', '!=', 'cancelled')
-            ->whereBetween('settlement_date', [$startDate, $endDate]);
+            ->whereBetween('settlement_date', [$startDate, $endDate])
+            ->whereHas('vendor', fn ($q) => $q->where('status', 'active'));
         $applyBranch($periodSettlementQuery, 'branch_id');
         $totalSettlementsCount = (clone $periodSettlementQuery)->count();
         $totalSettlementsValue = (clone $periodSettlementQuery)->sum('net_payable');
 
         // Total debit notes in date range
         $debitQuery = DebitNote::where('status', '!=', 'cancelled')
+            ->whereHas('vendor', fn ($q) => $q->where('status', 'active'))
             ->where(function ($q) {
                 $q->where('transaction_type', 'debit')
                   ->orWhereNull('transaction_type');
@@ -88,6 +91,7 @@ class DashboardController extends Controller
 
         // Total credit notes in date range
         $creditQuery = DebitNote::where('status', '!=', 'cancelled')
+            ->whereHas('vendor', fn ($q) => $q->where('status', 'active'))
             ->where('transaction_type', 'credit')
             ->whereBetween('date', [$startDate, $endDate]);
         $applyBranch($creditQuery, 'branch_id');
@@ -129,6 +133,7 @@ class DashboardController extends Controller
         // Vendor-wise Settlement
         $vendorWiseQuery = DB::table('settlements')
             ->join('vendors', 'settlements.vendor_id', '=', 'vendors.id')
+            ->where('vendors.status', 'active')
             ->where('settlements.status', '!=', 'cancelled')
             ->whereBetween('settlements.settlement_date', [$startDate, $endDate]);
         $applyBranch($vendorWiseQuery, 'settlements.branch_id');
@@ -140,15 +145,17 @@ class DashboardController extends Controller
 
         // Monthly Settlement Trend
         $monthlyTrendQuery = DB::table('settlements')
-            ->where('status', '!=', 'cancelled')
-            ->where('settlement_date', '>=', Carbon::now()->subMonths(5)->startOfMonth()->toDateString());
+            ->join('vendors', 'settlements.vendor_id', '=', 'vendors.id')
+            ->where('vendors.status', 'active')
+            ->where('settlements.status', '!=', 'cancelled')
+            ->where('settlements.settlement_date', '>=', Carbon::now()->subMonths(5)->startOfMonth()->toDateString());
         $applyBranch($monthlyTrendQuery, 'branch_id');
         $monthlyTrend = $monthlyTrendQuery->select(
-                DB::raw("DATE_FORMAT(settlement_date, '%Y-%m') as month"),
-                DB::raw('SUM(net_payable) as total_value'),
-                DB::raw('SUM(bran_value) as bran_value'),
-                DB::raw('SUM(rebate_amount) as rebate_value'),
-                DB::raw('COUNT(id) as count')
+                DB::raw("DATE_FORMAT(settlements.settlement_date, '%Y-%m') as month"),
+                DB::raw('SUM(settlements.net_payable) as total_value'),
+                DB::raw('SUM(settlements.bran_value) as bran_value'),
+                DB::raw('SUM(settlements.rebate_amount) as rebate_value'),
+                DB::raw('COUNT(settlements.id) as count')
             )
             ->groupBy('month')
             ->orderBy('month', 'asc')
@@ -156,6 +163,8 @@ class DashboardController extends Controller
 
         // Product-wise Settlement
         $productWiseQuery = DB::table('settlements')
+            ->join('vendors', 'settlements.vendor_id', '=', 'vendors.id')
+            ->where('vendors.status', 'active')
             ->leftJoin('products', 'settlements.product_id', '=', 'products.id')
             ->where('settlements.status', '!=', 'cancelled')
             ->whereBetween('settlements.settlement_date', [$startDate, $endDate]);
@@ -170,7 +179,8 @@ class DashboardController extends Controller
             ->get();
 
         // Recent Settlements
-        $recentSettlementsQuery = Settlement::with(['branch', 'vendor', 'product'])
+        $recentSettlementsQuery = Settlement::whereHas('vendor', fn ($q) => $q->where('status', 'active'))
+            ->with(['branch', 'vendor', 'product'])
             ->orderBy('settlement_date', 'desc')
             ->orderBy('id', 'desc');
         $applyBranch($recentSettlementsQuery, 'branch_id');

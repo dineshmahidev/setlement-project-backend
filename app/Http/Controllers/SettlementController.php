@@ -57,6 +57,12 @@ class SettlementController extends Controller
         $companyId = $this->activeCompanyId();
         $query = Settlement::with(['branch.company', 'vendor', 'product', 'invoice', 'debitNotes', 'creator']);
 
+        if (! $request->filled('vendor_id')) {
+            $query->whereHas('vendor', function ($vq) {
+                $vq->where('status', 'active');
+            });
+        }
+
         if ($companyId) {
             $query->whereHas('branch', function ($q) use ($companyId) {
                 $q->where('company_id', $companyId);
