@@ -412,6 +412,11 @@
         </tr>
     </table>
 
+    <!-- Settlement Remarks (Positioned below Net Payable & above Debit/Credit Note) -->
+    <div class="remarks-box">
+        <strong>Remarks:</strong> {{ $settlement->remarks ?: ($debitNoteData['remarks'] ?: 'Auto-generated ' . ($debitNoteData['note_type_label'] ?? 'Debit Note') . ' posted to vendor ledger') }}
+    </div>
+
     <!-- ========================================================================= -->
     <!-- SECTION 2: DEBIT / CREDIT NOTE (ALWAYS IN SAME SINGLE PDF PAGE)           -->
     <!-- ========================================================================= -->
@@ -544,10 +549,6 @@
                 </td>
             </tr>
         </table>
-
-        <div class="remarks-box">
-            <strong>Remarks:</strong> {{ $debitNoteData['remarks'] ?: 'Auto-generated ' . ($debitNoteData['note_type_label'] ?? 'Debit Note') . ' posted to vendor ledger' }}
-        </div>
     </div>
 
     <!-- Clean Footer Divider Line -->

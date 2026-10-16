@@ -26,17 +26,14 @@ class SettlementController extends Controller
     {
         $this->calcService = $calcService;
         $this->pdfService = $pdfService;
+    }
 
-        $this->middleware(function ($request, $next) {
-            $user = $request->user();
-            if ($user && ($user->isBranchManager() || $user->isStaff()) && ! $user->isSuperAdmin() && ! $user->isAdmin()) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Unauthorized: Branch Manager and Staff roles are restricted to the Inventory section only.',
-                ], 403);
-            }
-            return $next($request);
-        });
+    protected function authorizeSettlementAccess(?Request $request = null): void
+    {
+        $user = ($request ?? request())->user();
+        if ($user && ($user->isBranchManager() || $user->isStaff()) && ! $user->isSuperAdmin() && ! $user->isAdmin()) {
+            abort(403, 'Unauthorized: Branch Manager and Staff roles are restricted to the Inventory section only.');
+        }
     }
 
     /**
@@ -44,6 +41,7 @@ class SettlementController extends Controller
      */
     public function calculate(Request $request)
     {
+        $this->authorizeSettlementAccess($request);
         $data = $request->all();
         $result = $this->calcService->calculate($data);
 
@@ -55,6 +53,7 @@ class SettlementController extends Controller
 
     public function index(Request $request)
     {
+        $this->authorizeSettlementAccess($request);
         $companyId = $this->activeCompanyId();
         $query = Settlement::with(['branch.company', 'vendor', 'product', 'invoice', 'debitNotes', 'creator']);
 
@@ -109,6 +108,7 @@ class SettlementController extends Controller
 
     public function store(SettlementRequest $request)
     {
+        $this->authorizeSettlementAccess($request);
         $validated = $request->validated();
 
         $this->guardBranchAccess($validated['branch_id'] ?? null);
@@ -292,6 +292,7 @@ class SettlementController extends Controller
 
     public function show(Settlement $settlement)
     {
+        $this->authorizeSettlementAccess();
         $this->guardBranchOwnership($settlement);
 
         $settlement->load(['branch.company', 'vendor', 'product', 'invoice', 'debitNotes.items', 'qualityTests', 'charges', 'creator']);
@@ -329,6 +330,7 @@ class SettlementController extends Controller
 
     public function update(SettlementRequest $request, Settlement $settlement)
     {
+        $this->authorizeSettlementAccess($request);
         $this->guardBranchOwnership($settlement);
 
         if ($settlement->status === 'cancelled') {
@@ -491,6 +493,7 @@ class SettlementController extends Controller
 
     public function cancel(Request $request, Settlement $settlement)
     {
+        $this->authorizeSettlementAccess($request);
         $this->guardBranchOwnership($settlement);
 
         $request->validate([
@@ -549,6 +552,7 @@ class SettlementController extends Controller
 
     public function pdf(Settlement $settlement)
     {
+        $this->authorizeSettlementAccess();
         $this->guardBranchOwnership($settlement);
 
         $pdf = $this->pdfService->generateSettlementBillPdf($settlement);
@@ -559,6 +563,7 @@ class SettlementController extends Controller
 
     public function destroy(Settlement $settlement)
     {
+        $this->authorizeSettlementAccess();
         $this->guardBranchOwnership($settlement);
         $vendorId = $settlement->vendor_id;
 
