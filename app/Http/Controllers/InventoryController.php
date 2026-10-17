@@ -70,7 +70,9 @@ class InventoryController extends Controller
 
         $rows = [];
         foreach ($items as $item) {
-            $tx = InventoryTransaction::where('item_id', $item->id)->where('status', 'POSTED');
+            $tx = InventoryTransaction::where('item_id', $item->id)
+                ->where('status', 'POSTED')
+                ->where(fn($q) => $q->whereNull('reference_type')->orWhereNotIn('reference_type', ['SETTLEMENT_BILL', 'Settlement Bill', 'SETTLEMENT']));
             $this->scopeActiveVendorTransactions($tx);
             if ($branchId) {
                 $tx->where('branch_id', $branchId);
@@ -99,7 +101,9 @@ class InventoryController extends Controller
                 + (clone $outQ)->where('type', 'ADJUSTMENT_OUT')->sum('quantity');
 
             // Cumulative available stock as of dateTo (or all time if no dateTo)
-            $allTx = InventoryTransaction::where('item_id', $item->id)->where('status', 'POSTED');
+            $allTx = InventoryTransaction::where('item_id', $item->id)
+                ->where('status', 'POSTED')
+                ->where(fn($q) => $q->whereNull('reference_type')->orWhereNotIn('reference_type', ['SETTLEMENT_BILL', 'Settlement Bill', 'SETTLEMENT']));
             $this->scopeActiveVendorTransactions($allTx);
             if ($branchId) {
                 $allTx->where('branch_id', $branchId);
@@ -131,7 +135,7 @@ class InventoryController extends Controller
                 $status = 'Low Stock';
             }
 
-            if ($hideZero && abs($available) < 0.0001 && abs($totIn) < 0.0001 && abs($totOut) < 0.0001 && abs($opening) < 0.0001) {
+            if ($hideZero && abs($available) < 0.0001) {
                 continue;
             }
 
@@ -215,7 +219,8 @@ class InventoryController extends Controller
     {
         $query = InventoryTransaction::with(['item.unit', 'branch', 'vendor', 'vehicle'])
             ->orderBy('date')->orderBy('id')
-            ->where('status', 'POSTED');
+            ->where('status', 'POSTED')
+            ->where(fn($q) => $q->whereNull('reference_type')->orWhereNotIn('reference_type', ['SETTLEMENT_BILL', 'Settlement Bill', 'SETTLEMENT']));
 
         $this->scopeBranches($query);
         $this->scopeActiveVendorTransactions($query);
@@ -230,6 +235,7 @@ class InventoryController extends Controller
         $running = [];
         if ($request->filled('date_from')) {
             $priorQuery = InventoryTransaction::where('status', 'POSTED')
+                ->where(fn($q) => $q->whereNull('reference_type')->orWhereNotIn('reference_type', ['SETTLEMENT_BILL', 'Settlement Bill', 'SETTLEMENT']))
                 ->whereDate('date', '<', $request->date_from);
             $this->scopeBranches($priorQuery);
             $this->scopeActiveVendorTransactions($priorQuery);
@@ -763,40 +769,27 @@ class InventoryController extends Controller
     {
         $branchId = $request->branch_id ? (int) $request->branch_id : null;
         $vendorId = $request->vendor_id ? (int) $request->vendor_id : null;
-        $itemId = $request->item_id ? (int) $request->item_id : ($request->product_id ? (int) $request->product_id : null);
+        $itemId = $request->item_id ? (int) $request->item_id : null;
 
-        // 1. Query Settlements (Vendor Deliveries / Stock Inlets)
-        $settlementsQuery = \App\Models\Settlement::with(['vendor', 'product', 'branch'])
-            ->whereIn('status', ['APPROVED', 'POSTED'])
-            ->whereHas('vendor', fn ($q) => $q->whereRaw('LOWER(status) != ?', ['inactive']));
-        $this->scopeBranches($settlementsQuery);
-        if ($branchId) {
-            $settlementsQuery->where('branch_id', $branchId);
-        }
-        if ($vendorId) {
-            $settlementsQuery->where('vendor_id', $vendorId);
-        }
-        if ($itemId) {
-            $settlementsQuery->where('product_id', $itemId);
-        }
-        if ($request->filled('date_from')) {
-            $settlementsQuery->whereDate('date', '>=', $request->date_from);
-        }
-        if ($request->filled('date_to')) {
-            $settlementsQuery->whereDate('date', '<=', $request->date_to);
-        }
-        $settlements = $settlementsQuery->get();
-
-        // 2. Query InventoryTransactions
+        // Query ONLY physical InventoryTransactions (STRICTLY EXCLUDE Settlement bills)
         $txQuery = InventoryTransaction::with(['vendor', 'item', 'branch', 'vehicle'])
-            ->where('status', 'POSTED');
+            ->where('status', 'POSTED')
+            ->where(function ($q) {
+                $q->whereNull('reference_type')
+                  ->orWhereNotIn('reference_type', ['SETTLEMENT_BILL', 'Settlement Bill', 'SETTLEMENT']);
+            });
+
         $this->scopeBranches($txQuery);
+        $this->scopeCompany($txQuery);
         $this->scopeActiveVendorTransactions($txQuery);
+
         if ($branchId) {
             $txQuery->where('branch_id', $branchId);
         }
         if ($vendorId) {
-            $txQuery->where('vendor_id', $vendorId);
+            $txQuery->where(function ($q) use ($vendorId) {
+                $q->where('vendor_id', $vendorId)->orWhere('party_id', $vendorId);
+            });
         }
         if ($itemId) {
             $txQuery->where('item_id', $itemId);
@@ -807,82 +800,19 @@ class InventoryController extends Controller
         if ($request->filled('date_to')) {
             $txQuery->whereDate('date', '<=', $request->date_to);
         }
+
         $transactions = $txQuery->get();
 
         $partyMap = [];
         $godownMap = [];
         $recentMovements = [];
 
-        // Process Settlements (Inward Stock from Vendors)
-        foreach ($settlements as $s) {
-            $vId = $s->vendor_id ?? 0;
-            $vName = $s->vendor?->name ?? 'Direct Supplier';
-            $vCode = $s->vendor?->vendor_code ?? ($vId ? 'V-'.$vId : 'DIRECT');
-            $pId = $s->product_id ?? 0;
-            $pName = $s->product?->name ?? 'Agro Commodity';
-            $gId = $s->branch_id;
-            $gName = $s->branch?->branch_name ?? $s->branch?->name ?? 'Godown #'.$gId;
-
-            $mt = (float) ($s->final_weight_mt > 0 ? $s->final_weight_mt : $s->net_weight_mt);
-            $bags = (float) (($s->jute_bag ?? 0) + ($s->pp_bag ?? 0));
-
-            $key = $gId . '_' . $vId . '_' . $pId;
-
-            if (!isset($partyMap[$key])) {
-                $partyMap[$key] = [
-                    'branch_id' => $gId,
-                    'branch_name' => $gName,
-                    'vendor_id' => $vId,
-                    'vendor_name' => $vName,
-                    'vendor_code' => $vCode,
-                    'product_id' => $pId,
-                    'product_name' => $pName,
-                    'inlet_mt' => 0,
-                    'inlet_bags' => 0,
-                    'outlet_mt' => 0,
-                    'outlet_bags' => 0,
-                    'movements' => [],
-                ];
-            }
-
-            $partyMap[$key]['inlet_mt'] += $mt;
-            $partyMap[$key]['inlet_bags'] += $bags;
-
-            $movementItem = [
-                'date' => $s->bill_date ? (is_string($s->bill_date) ? $s->bill_date : $s->bill_date->toDateString()) : $s->created_at->toDateString(),
-                'type' => 'IMPORT_INLET',
-                'ref_no' => $s->bill_number ?? 'SETTLEMENT-'.$s->id,
-                'source' => 'Vendor: ' . $vName,
-                'destination' => 'Godown: ' . $gName,
-                'quantity_mt' => round($mt, 3),
-                'quantity_bags' => (int) $bags,
-                'vehicle' => $s->vehicle_number ?? 'N/A',
-                'remarks' => 'Approved Settlement Bill #' . ($s->bill_number ?? $s->id),
-            ];
-
-            $partyMap[$key]['movements'][] = $movementItem;
-            $recentMovements[] = $movementItem;
-
-            if (!isset($godownMap[$gId])) {
-                $godownMap[$gId] = [
-                    'branch_id' => $gId,
-                    'branch_name' => $gName,
-                    'total_inlet_mt' => 0,
-                    'total_inlet_bags' => 0,
-                    'total_outlet_mt' => 0,
-                    'total_outlet_bags' => 0,
-                    'vendors_count' => 0,
-                ];
-            }
-            $godownMap[$gId]['total_inlet_mt'] += $mt;
-            $godownMap[$gId]['total_inlet_bags'] += $bags;
-        }
-
-        // Process Inventory Transactions
+        // Process Physical Inventory Transactions
         foreach ($transactions as $tx) {
-            $vId = $tx->vendor_id ?? 0;
-            $vName = $tx->vendor?->name ?? ($tx->customer ?: 'General / Direct');
-            $vCode = $tx->vendor?->vendor_code ?? ($vId ? 'V-'.$vId : 'DIRECT');
+            $vId = $tx->vendor_id ?? $tx->party_id ?? 0;
+            $v = $tx->vendor;
+            $vName = $v?->vendor_name ?? $v?->name ?? ($tx->customer ?: 'General / Direct');
+            $vCode = $v?->vendor_code ?? ($vId ? 'V-'.$vId : 'DIRECT');
             $pId = $tx->item_id ?? 0;
             $pName = $tx->item?->name ?? 'Agro Product';
             $gId = $tx->branch_id;
@@ -903,6 +833,8 @@ class InventoryController extends Controller
                     'vendor_code' => $vCode,
                     'product_id' => $pId,
                     'product_name' => $pName,
+                    'item_id' => $pId,
+                    'item_name' => $pName,
                     'inlet_mt' => 0,
                     'inlet_bags' => 0,
                     'outlet_mt' => 0,
@@ -978,6 +910,8 @@ class InventoryController extends Controller
                 'vendor_code' => $item['vendor_code'],
                 'product_id' => $item['product_id'],
                 'product_name' => $item['product_name'],
+                'item_id' => $item['item_id'],
+                'item_name' => $item['item_name'],
                 'inlet_mt' => $inletMt,
                 'inlet_bags' => $inletBags,
                 'outlet_mt' => $outletMt,

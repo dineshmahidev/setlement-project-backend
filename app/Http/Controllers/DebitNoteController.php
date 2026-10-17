@@ -48,6 +48,20 @@ class DebitNoteController extends Controller
             $query->where('status', $request->status);
         }
 
+        if ($request->filled('transaction_type')) {
+            $type = strtolower($request->transaction_type);
+            if ($type === 'credit') {
+                $query->where('transaction_type', 'credit');
+            } elseif ($type === 'debit') {
+                $query->where(function ($q) {
+                    $q->where('transaction_type', 'debit')
+                      ->orWhereNull('transaction_type');
+                });
+            } else {
+                $query->where('transaction_type', $type);
+            }
+        }
+
         if ($request->filled('from_date') && $request->filled('to_date')) {
             $query->whereBetween('date', [$request->from_date, $request->to_date]);
         }

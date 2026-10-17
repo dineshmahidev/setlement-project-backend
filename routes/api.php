@@ -30,7 +30,7 @@ use App\Http\Controllers\VendorLedgerController;
 use Illuminate\Support\Facades\Route;
 
 // Public routes
-Route::post('/login', [AuthController::class, 'login']);
+Route::post('/login', [AuthController::class, 'login'])->name('login');
 Route::get('/public/cms/{slug?}', [CompanyController::class, 'publicCms']);
 Route::post('/public/enquiries', [EnquiryController::class, 'publicStore']);
 Route::post('/public/track-visit', [EnquiryController::class, 'publicTrackVisit']);
@@ -131,6 +131,7 @@ Route::middleware(['auth:sanctum', 'company.scope'])->group(function () {
     // Lots / lot-wise stock
     Route::middleware('permission:inventory.view')->group(function () {
         Route::get('/lots/summary', [LotController::class, 'summary']);
+        Route::get('/lots/pdf', [LotController::class, 'pdf']);
         Route::apiResource('lots', LotController::class)->only(['index', 'show']);
     });
 

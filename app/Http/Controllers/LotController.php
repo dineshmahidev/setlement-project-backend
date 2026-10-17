@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Lot;
 use App\Services\InventoryLedgerService;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
 
 class LotController extends Controller
@@ -90,5 +91,113 @@ class LotController extends Controller
             'data' => $lotData,
             ...$lotData,
         ]);
+    }
+
+    /** Lot-wise stock PDF export (optionally scoped to a duration via date_from / date_to). */
+    public function pdf(Request $request)
+    {
+        $dateFrom = $request->date_from ?: null;
+        $dateTo = $request->date_to ?: null;
+
+        $q = Lot::with(['item:id,code,name,material_type', 'branch:id,branch_name,branch_code', 'unit:id,code,name'])
+            ->where('status', 'OPEN')
+            ->orderBy('lot_number');
+
+        $companyId = $this->activeCompanyId();
+        if ($companyId) $q->where('company_id', $companyId);
+        else $this->scopeBranches($q);
+
+        if ($request->filled('branch_id')) $q->where('branch_id', $request->branch_id);
+        if ($request->filled('item_id')) $q->where('item_id', $request->item_id);
+        if ($request->filled('search')) {
+            $s = $request->search;
+            $q->where(fn ($qq) => $qq->where('lot_number', 'like', "%$s%")
+                ->orWhereHas('item', fn ($i) => $i->where('name', 'like', "%$s%")->orWhere('code', 'like', "%$s%")));
+        }
+
+        $lots = $q->get();
+
+        // When a duration is set, restrict to lots that moved within it and show period In/Out.
+        $periodIn = [];
+        $periodOut = [];
+        if (($dateFrom || $dateTo) && $lots->isNotEmpty()) {
+            $txs = \App\Models\InventoryTransaction::where('status', 'POSTED')
+                ->whereIn('lot_number', $lots->pluck('lot_number')->unique())
+                ->when($dateFrom, fn ($t) => $t->whereDate('date', '>=', $dateFrom))
+                ->when($dateTo, fn ($t) => $t->whereDate('date', '<=', $dateTo))
+                ->get(['lot_number', 'branch_id', 'item_id', 'signed_quantity']);
+
+            foreach ($txs as $tx) {
+                $key = $tx->lot_number.'|'.$tx->branch_id.'|'.$tx->item_id;
+                $qty = (float) $tx->signed_quantity;
+                if ($qty >= 0) $periodIn[$key] = ($periodIn[$key] ?? 0) + $qty;
+                else $periodOut[$key] = ($periodOut[$key] ?? 0) + abs($qty);
+            }
+
+            $lots = $lots->filter(function ($lot) use ($periodIn, $periodOut) {
+                $key = $lot->lot_number.'|'.$lot->branch_id.'|'.$lot->item_id;
+                return isset($periodIn[$key]) || isset($periodOut[$key]);
+            })->values();
+        }
+
+        $rows = $lots->map(function ($lot) use ($periodIn, $periodOut) {
+            $key = $lot->lot_number.'|'.$lot->branch_id.'|'.$lot->item_id;
+            return [
+                'lot_number' => $lot->lot_number,
+                'item_name' => $lot->item?->name,
+                'item_code' => $lot->item?->code,
+                'branch_name' => $lot->branch?->branch_name,
+                'oil_pct' => $lot->oil_pct,
+                'received_qty' => (float) $lot->received_qty,
+                'issued_qty' => (float) $lot->issued_qty,
+                'available_qty' => (float) $lot->available_qty,
+                'stock_value' => (float) $lot->stock_value,
+                'period_in' => $periodIn[$key] ?? null,
+                'period_out' => $periodOut[$key] ?? null,
+            ];
+        })->values();
+
+        $totLots = $rows->count();
+        $totAvailable = (float) $rows->sum('available_qty');
+        $totValue = (float) $rows->sum('stock_value');
+        $totIn = (float) $rows->sum(fn ($r) => $r['period_in'] ?? $r['received_qty']);
+        $totOut = (float) $rows->sum(fn ($r) => $r['period_out'] ?? $r['issued_qty']);
+
+        $branchId = $request->branch_id ? (int) $request->branch_id : null;
+        $itemId = $request->item_id ? (int) $request->item_id : null;
+
+        $company = app(\App\Services\PdfService::class)->resolveCompany($branchId ?: $lots->first()?->branch_id);
+        $branchName = $branchId ? \App\Models\Branch::find($branchId)?->branch_name : null;
+        $itemName = $itemId ? \App\Models\Item::find($itemId)?->name : null;
+
+        $pdf = Pdf::loadView('pdf.lots_stock', [
+            'rows' => $rows,
+            'company' => $company,
+            'dateFrom' => $dateFrom,
+            'dateTo' => $dateTo,
+            'branchName' => $branchName,
+            'itemName' => $itemName,
+            'search' => $request->search,
+            'totLots' => $totLots,
+            'totIn' => $totIn,
+            'totOut' => $totOut,
+            'totAvailable' => $totAvailable,
+            'totValue' => $totValue,
+            'hasDuration' => (bool) ($dateFrom || $dateTo),
+        ])->setPaper('a4', 'landscape');
+
+        $filename = 'Lots_Stock_Report';
+        if ($dateFrom && $dateTo) {
+            $filename .= '_' . $dateFrom . '_to_' . $dateTo;
+        } elseif ($dateFrom) {
+            $filename .= '_from_' . $dateFrom;
+        } elseif ($dateTo) {
+            $filename .= '_upto_' . $dateTo;
+        } else {
+            $filename .= '_' . date('Ymd_His');
+        }
+        $filename .= '.pdf';
+
+        return $pdf->stream($filename);
     }
 }

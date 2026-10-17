@@ -678,7 +678,9 @@ class InventoryLedgerService
     /** Dashboard KPIs (real DB, company-scoped). */
     public function dashboardKpis(int $companyId, ?int $branchId = null, ?string $from = null, ?string $to = null): array
     {
-        $tx = InventoryTransaction::where('status', 'POSTED')->where('company_id', $companyId);
+        $tx = InventoryTransaction::where('status', 'POSTED')
+            ->where('company_id', $companyId)
+            ->where(fn($q) => $q->whereNull('reference_type')->orWhereNotIn('reference_type', ['SETTLEMENT_BILL', 'Settlement Bill', 'SETTLEMENT']));
         if ($branchId) $tx->where('branch_id', $branchId);
         if ($from) $tx->whereDate('date', '>=', $from);
         if ($to) $tx->whereDate('date', '<=', $to);
