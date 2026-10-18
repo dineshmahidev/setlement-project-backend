@@ -261,4 +261,184 @@ class InventoryLedgerTest extends TestCase
         $this->assertGreaterThan(0, InventoryTransaction::where('lot_number', 'L9')->count());
         $this->assertEquals(5, $this->ledger->availableQty($this->company->id, $this->branch->id, $this->item->id));
     }
+
+    public function test_edit_confirmed_inward_updates_ledger_row_in_place(): void
+    {
+        $in = $this->makeInward([['item_id' => $this->item->id, 'lot_number' => 'L1', 'quantity' => 5, 'oil_pct' => 18, 'rate' => 100]]);
+        $this->ledger->confirmInward($in->fresh('items'), $this->userId);
+        $origTx = InventoryTransaction::where('reference_type', 'INWARD')->where('reference_id', $in->id)->first();
+
+        // Stale reversal row left behind by the old cancel-based edit flow
+        InventoryTransaction::create([
+            'transaction_number' => $in->entry_number.'-R-STALE',
+            'date' => now()->toDateString(),
+            'company_id' => $this->company->id,
+            'branch_id' => $this->branch->id,
+            'item_id' => $this->item->id,
+            'type' => 'STOCK_OUT',
+            'quantity' => 5,
+            'signed_quantity' => -5,
+            'lot_number' => 'L1',
+            'reference_type' => 'INWARD_CANCEL',
+            'reference_id' => $in->id,
+            'status' => 'POSTED',
+            'created_by' => $this->userId,
+        ]);
+
+        // PUT edit 5 -> 15 (mirrors InwardController::update CONFIRMED path)
+        $request = \Illuminate\Http\Request::create('/api/inward/'.$in->id, 'PUT', [
+            'branch_id' => $this->branch->id,
+            'date' => now()->toDateString(),
+            'items' => [[
+                'item_id' => $this->item->id, 'lot_number' => 'L1', 'quantity' => 15, 'rate' => 100, 'oil_pct' => 18,
+            ]],
+        ]);
+        $request->setUserResolver(fn () => User::find(1));
+        $response = app(\App\Http\Controllers\InwardController::class)->update($request, $in->fresh());
+        $this->assertEquals(200, $response->getStatusCode());
+        $this->assertTrue(json_decode($response->getContent(), true)['success'] ?? false, (string) json_decode($response->getContent(), true)['message']);
+
+        // ONE live row — the SAME row updated in place (id + number kept → order stable)
+        $live = InventoryTransaction::where('reference_type', 'INWARD')->where('reference_id', $in->id)->get();
+        $this->assertCount(1, $live);
+        $this->assertEquals($origTx->id, $live->first()->id);
+        $this->assertEquals($origTx->transaction_number, $live->first()->transaction_number);
+        $this->assertEquals(15, (float) $live->first()->signed_quantity);
+        // Legacy cancel row cleaned up; raw history kept in trash
+        $this->assertEquals(0, InventoryTransaction::where('reference_id', $in->id)
+            ->where('reference_type', 'INWARD_CANCEL')->count());
+        $this->assertGreaterThan(0, InventoryTransaction::onlyTrashed()->where('reference_id', $in->id)->count());
+
+        // Lot adjusted in place, still OPEN
+        $lot = Lot::where('lot_number', 'L1')->first();
+        $this->assertEquals(15, (float) $lot->available_qty);
+        $this->assertEquals(15, (float) $lot->received_qty);
+        $this->assertEquals('OPEN', $lot->status);
+        $this->assertEquals(1500, (float) $lot->stock_value);
+        $this->assertEquals(15, $this->ledger->availableQty($this->company->id, $this->branch->id, $this->item->id));
+        $this->assertEquals('CONFIRMED', $in->fresh()->status);
+    }
+
+    public function test_edit_confirmed_outward_updates_ledger_row_in_place(): void
+    {
+        $in = $this->makeInward([['item_id' => $this->item->id, 'lot_number' => 'L1', 'quantity' => 10, 'oil_pct' => 18, 'rate' => 100]]);
+        $this->ledger->confirmInward($in->fresh('items'), $this->userId);
+        $lot = Lot::where('lot_number', 'L1')->first();
+
+        $out = OutwardEntry::create([
+            'entry_number' => $this->ledger->nextNumber('OUT', 'outward_entries', 'entry_number'),
+            'company_id' => $this->company->id, 'branch_id' => $this->branch->id,
+            'date' => now()->toDateString(), 'dispatch_type' => 'DIRECT', 'status' => 'DRAFT', 'created_by' => $this->userId,
+        ]);
+        $out->items()->create(['item_id' => $this->item->id, 'lot_id' => $lot->id, 'quantity' => 4, 'rate' => 120, 'amount' => 480]);
+        $this->ledger->confirmOutward($out->fresh('items'), $this->userId);
+        $origTx = InventoryTransaction::where('reference_type', 'OUTWARD')->where('reference_id', $out->id)->first();
+
+        // PUT edit 4 -> 8 (mirrors OutwardController::update CONFIRMED path)
+        $request = \Illuminate\Http\Request::create('/api/outward/'.$out->id, 'PUT', [
+            'branch_id' => $this->branch->id,
+            'date' => now()->toDateString(),
+            'items' => [[
+                'item_id' => $this->item->id, 'lot_id' => $lot->id, 'quantity' => 8, 'rate' => 120,
+            ]],
+        ]);
+        $request->setUserResolver(fn () => User::find(1));
+        $response = app(\App\Http\Controllers\OutwardController::class)->update($request, $out->fresh());
+        $this->assertEquals(200, $response->getStatusCode());
+        $this->assertTrue(json_decode($response->getContent(), true)['success'] ?? false, (string) json_decode($response->getContent(), true)['message']);
+
+        $live = InventoryTransaction::where('reference_type', 'OUTWARD')->where('reference_id', $out->id)->get();
+        $this->assertCount(1, $live);
+        $this->assertEquals($origTx->id, $live->first()->id); // same row, order stable
+        $this->assertEquals(-8, (float) $live->first()->signed_quantity);
+        $this->assertEquals(0, InventoryTransaction::where('reference_id', $out->id)
+            ->where('reference_type', 'OUTWARD_CANCEL')->count());
+
+        $lot->refresh();
+        $this->assertEquals(2, (float) $lot->available_qty);
+        $this->assertEquals(8, (float) $lot->issued_qty);
+        $this->assertEquals('OPEN', $lot->status);
+        $this->assertEquals('CONFIRMED', $out->fresh()->status);
+    }
+
+    public function test_inward_update_removing_line_voids_row_and_restores_stock(): void
+    {
+        $item2 = Item::create([
+            'company_id' => $this->company->id, 'code' => 'IT-2', 'name' => 'Other Bran', 'material_type' => 'Raw', 'status' => 'ACTIVE',
+        ]);
+        $in = $this->makeInward([
+            ['item_id' => $this->item->id, 'lot_number' => 'LA', 'quantity' => 5, 'rate' => 100],
+            ['item_id' => $item2->id, 'lot_number' => 'LB', 'quantity' => 7, 'rate' => 50],
+        ]);
+        $this->ledger->confirmInward($in->fresh('items'), $this->userId);
+        $this->assertEquals(7, $this->ledger->availableQty($this->company->id, $this->branch->id, $item2->id));
+
+        // Edit keeps only the first line — second line removed
+        $request = \Illuminate\Http\Request::create('/api/inward/'.$in->id, 'PUT', [
+            'branch_id' => $this->branch->id,
+            'date' => now()->toDateString(),
+            'items' => [[
+                'item_id' => $this->item->id, 'lot_number' => 'LA', 'quantity' => 5, 'rate' => 100,
+            ]],
+        ]);
+        $request->setUserResolver(fn () => User::find(1));
+        $response = app(\App\Http\Controllers\InwardController::class)->update($request, $in->fresh());
+        $this->assertEquals(200, $response->getStatusCode());
+        $this->assertTrue(json_decode($response->getContent(), true)['success'] ?? false, (string) json_decode($response->getContent(), true)['message']);
+
+        // Removed line: stock reversed, row voided to trash, line deleted
+        $this->assertEquals(0, $this->ledger->availableQty($this->company->id, $this->branch->id, $item2->id));
+        $this->assertEquals(0, InventoryTransaction::where('reference_id', $in->id)->where('item_id', $item2->id)->count());
+        $this->assertGreaterThan(0, InventoryTransaction::onlyTrashed()->where('reference_id', $in->id)->where('item_id', $item2->id)->count());
+        $this->assertEquals(1, $in->fresh()->items()->count());
+        // Kept line untouched
+        $this->assertEquals(1, InventoryTransaction::where('reference_type', 'INWARD')->where('reference_id', $in->id)->count());
+        $this->assertEquals(5, $this->ledger->availableQty($this->company->id, $this->branch->id, $this->item->id));
+        $this->assertEquals('CONFIRMED', $in->fresh()->status);
+    }
+
+    public function test_inward_update_carries_auto_lot_and_posts_single_ledger_row(): void
+    {
+        // Confirmed entry with NO explicit lot number (auto-generated at confirm)
+        $in = $this->makeInward([['item_id' => $this->item->id, 'quantity' => 5, 'rate' => 100]]);
+        $this->ledger->confirmInward($in->fresh('items'), $this->userId);
+        $this->assertNotNull($in->fresh()->items->first()->lot_number);
+        $this->assertEquals(1, Lot::where('item_id', $this->item->id)->count());
+        $origTx = InventoryTransaction::where('reference_type', 'INWARD')->where('reference_id', $in->id)->first();
+
+        // PUT /inward/{id} without a lot number → lot must carry over, not fork
+        $request = \Illuminate\Http\Request::create('/api/inward/'.$in->id, 'PUT', [
+            'branch_id' => $this->branch->id,
+            'date' => now()->toDateString(),
+            'items' => [[
+                'item_id' => $this->item->id,
+                'quantity' => 15,
+                'rate' => 100,
+                'lot_number' => null,
+            ]],
+        ]);
+        $request->setUserResolver(fn () => User::find(1));
+
+        $response = app(\App\Http\Controllers\InwardController::class)->update($request, $in->fresh());
+        $this->assertEquals(200, $response->getStatusCode());
+        $data = json_decode($response->getContent(), true);
+        $this->assertTrue($data['success'] ?? false, (string) ($data['message'] ?? 'update failed'));
+
+        // Same lot reused (no second auto lot), stock correct, entry still CONFIRMED
+        $this->assertEquals(1, Lot::where('item_id', $this->item->id)->count());
+        $lot = Lot::where('item_id', $this->item->id)->first();
+        $this->assertEquals(15, (float) $lot->available_qty);
+        $this->assertEquals('OPEN', $lot->status);
+        $this->assertEquals('CONFIRMED', $in->fresh()->status);
+
+        // Ledger: single STOCK_IN 15 row — same row id + transaction_number kept
+        $live = InventoryTransaction::where('reference_type', 'INWARD')->where('reference_id', $in->id)->get();
+        $this->assertCount(1, $live);
+        $this->assertEquals($origTx->id, $live->first()->id);
+        $this->assertEquals($origTx->transaction_number, $live->first()->transaction_number);
+        $this->assertEquals(15, (float) $live->first()->signed_quantity);
+        $this->assertEquals(0, InventoryTransaction::where('reference_id', $in->id)
+            ->where('reference_type', 'INWARD_CANCEL')->count());
+        $this->assertEquals(15, $this->ledger->availableQty($this->company->id, $this->branch->id, $this->item->id));
+    }
 }

@@ -140,6 +140,8 @@ class TrashController extends Controller
                     ->where('lot_number', $item->lot_number)
                     ->where('branch_id', $item->branch_id)
                     ->where('item_id', $item->item_id)
+                    // VOID rows are superseded copies from entry edits — never bring them back
+                    ->where('transaction_number', 'NOT LIKE', '%-VOID-%')
                     ->restore();
             });
         } else {

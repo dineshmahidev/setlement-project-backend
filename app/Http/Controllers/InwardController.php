@@ -144,12 +144,35 @@ class InwardController extends Controller
 
         try {
             DB::transaction(function () use ($inward, $data, $request, $userId) {
-                $wasConfirmed = ($inward->status === 'CONFIRMED');
-                if ($wasConfirmed) {
-                    $this->ledger->cancelInward($inward, $userId, 'Reversed for editing');
+                $headerData = collect($data)->except(['items', 'bill_no', 'remarks'])->all();
+
+                if ($inward->status === 'CONFIRMED') {
+                    // In-place edit: ledger rows are updated (not duplicated), lots
+                    // adjusted by delta, entry stays CONFIRMED.
+                    $inward->update($headerData);
+                    if ($request->has('items') && is_array($request->items)) {
+                        $lines = [];
+                        foreach ($request->items as $i) {
+                            $qty = (float) $i['quantity'];
+                            $rate = (float) ($i['rate'] ?? 0);
+                            $lines[] = [
+                                'item_id' => (int) $i['item_id'],
+                                'lot_number' => $i['lot_number'] ?? null,
+                                'quantity' => $qty,
+                                'unit_id' => $i['unit_id'] ?? null,
+                                'oil_pct' => $i['oil_pct'] ?? null,
+                                'grade_id' => $i['grade_id'] ?? null,
+                                'rate' => $i['rate'] ?? null,
+                                'amount' => round($qty * $rate + ((float) ($i['additional_charges'] ?? 0)), 2),
+                                'notes' => $i['notes'] ?? null,
+                            ];
+                        }
+                        $this->ledger->updatePostedInward($inward, $lines, $userId);
+                        $inward->update(['total_amount' => round((float) collect($lines)->sum('amount'), 2)]);
+                    }
+                    return;
                 }
 
-                $headerData = collect($data)->except(['items', 'bill_no', 'remarks'])->all();
                 $headerData['status'] = 'DRAFT';
                 $inward->update($headerData);
 

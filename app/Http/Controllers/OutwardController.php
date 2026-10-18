@@ -184,12 +184,34 @@ class OutwardController extends Controller
 
         try {
             DB::transaction(function () use ($outward, $data, $request, $userId) {
-                $wasConfirmed = ($outward->status === 'CONFIRMED');
-                if ($wasConfirmed) {
-                    $this->ledger->cancelOutward($outward, $userId, 'Reversed for editing');
+                $headerData = collect($data)->except(['items', 'remarks'])->all();
+
+                if ($outward->status === 'CONFIRMED') {
+                    // In-place edit: ledger rows are updated (not duplicated), lots
+                    // adjusted by delta, entry stays CONFIRMED.
+                    $outward->update($headerData);
+                    if ($request->has('items') && is_array($request->items)) {
+                        $lines = [];
+                        foreach ($request->items as $i) {
+                            $qty = (float) $i['quantity'];
+                            $rate = (float) ($i['rate'] ?? 0);
+                            $lines[] = [
+                                'item_id' => (int) $i['item_id'],
+                                'lot_id' => ! empty($i['lot_id']) ? (int) $i['lot_id'] : null,
+                                'quantity' => $qty,
+                                'unit_id' => $i['unit_id'] ?? null,
+                                'oil_pct' => $i['oil_pct'] ?? null,
+                                'grade_id' => $i['grade_id'] ?? null,
+                                'rate' => $i['rate'] ?? null,
+                                'amount' => round($qty * $rate - ((float) ($i['discount'] ?? 0)) + ((float) ($i['additional_charges'] ?? 0)), 2),
+                            ];
+                        }
+                        $this->ledger->updatePostedOutward($outward, $lines, $userId);
+                        $outward->update(['total_amount' => round((float) collect($lines)->sum('amount'), 2)]);
+                    }
+                    return;
                 }
 
-                $headerData = collect($data)->except(['items', 'remarks'])->all();
                 $headerData['status'] = 'DRAFT';
                 $outward->update($headerData);
 
