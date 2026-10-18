@@ -16,7 +16,7 @@ class VendorRequest extends FormRequest
         $id = $this->route('vendor') ? $this->route('vendor')->id : null;
 
         return [
-            'vendor_code' => ['required', 'string', 'max:50', 'unique:vendors,vendor_code,' . $id],
+            'vendor_code' => ['nullable', 'string', 'max:50', 'unique:vendors,vendor_code,' . $id],
             'vendor_name' => ['required', 'string', 'max:255'],
             'business_name' => ['nullable', 'string', 'max:255'],
             'address' => ['nullable', 'string'],

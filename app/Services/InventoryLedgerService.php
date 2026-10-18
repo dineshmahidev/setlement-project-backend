@@ -259,6 +259,101 @@ class InventoryLedgerService
         });
     }
 
+    /**
+     * Trash inward: reverse lot quantities silently (no ledger transactions posted).
+     * Original STOCK_IN transactions stay in the table but are excluded from all
+     * reports/dashboards via trashed-entry scopes since the entry is soft-deleted.
+     */
+    public function trashInward(InwardEntry $entry): InwardEntry
+    {
+        return DB::transaction(function () use ($entry) {
+            $entry = InwardEntry::whereKey($entry->id)->lockForUpdate()->first();
+            if ($entry->trashed()) return $entry;
+            if ($entry->status !== 'CONFIRMED') {
+                $entry->delete();
+                return $entry;
+            }
+
+            foreach ($entry->items as $it) {
+                $qty = (float) $it->quantity;
+                $lotNo = $it->lot_number ?: sprintf('LOT-%s-%d', $entry->entry_number, $it->id);
+                $lot = Lot::where('company_id', $entry->company_id)
+                    ->where('branch_id', $entry->branch_id)
+                    ->where('item_id', $it->item_id)
+                    ->where('lot_number', $lotNo)
+                    ->lockForUpdate()->first();
+
+                if ($lot) {
+                    $newAvail = (float) $lot->available_qty - $qty;
+                    $newVal = max(0, round((float) $lot->stock_value - (float) $it->amount, 2));
+                    $lot->update([
+                        'received_qty' => $lot->received_qty - $qty,
+                        'available_qty' => $newAvail,
+                        'stock_value' => $newVal,
+                        'unit_cost' => $newAvail > 0 ? round($newVal / $newAvail, 4) : 0,
+                        'status' => $newAvail <= 0 ? 'CLOSED' : 'OPEN',
+                    ]);
+                }
+            }
+
+            $entry->delete();
+            return $entry;
+        });
+    }
+
+    /**
+     * Trash outward: restore lot quantities silently (no ledger transactions posted).
+     */
+    public function trashOutward(OutwardEntry $entry): OutwardEntry
+    {
+        return DB::transaction(function () use ($entry) {
+            $entry = OutwardEntry::whereKey($entry->id)->lockForUpdate()->first();
+            if ($entry->trashed()) return $entry;
+            if ($entry->status !== 'CONFIRMED') {
+                $entry->delete();
+                return $entry;
+            }
+
+            foreach ($entry->items as $it) {
+                $qty = (float) $it->quantity;
+
+                if ($it->lot_id) {
+                    $lot = Lot::whereKey($it->lot_id)->lockForUpdate()->first();
+                    if ($lot) {
+                        $newAvail = (float) $lot->available_qty + $qty;
+                        $cost = (float) $lot->unit_cost;
+                        $lot->update([
+                            'available_qty' => $newAvail,
+                            'stock_value' => round($newAvail * $cost, 2),
+                            'status' => $newAvail > 0 ? 'OPEN' : $lot->status,
+                        ]);
+                    }
+                } else {
+                    // FIFO credit-back for mixed dispatches
+                    $remaining = $qty;
+                    $lots = Lot::where('company_id', $entry->company_id)
+                        ->where('branch_id', $entry->branch_id)
+                        ->where('item_id', $it->item_id)
+                        ->orderBy('id')->lockForUpdate()->get();
+                    foreach ($lots as $lot) {
+                        if ($remaining <= 0) break;
+                        $newAvail = (float) $lot->available_qty + $remaining;
+                        $cost = (float) $lot->unit_cost;
+                        $lot->update([
+                            'available_qty' => $newAvail,
+                            'stock_value' => round($newAvail * $cost, 2),
+                            'status' => $newAvail > 0 ? 'OPEN' : $lot->status,
+                        ]);
+                        $remaining = 0;
+                    }
+                }
+            }
+
+            $entry->delete();
+            return $entry;
+        });
+    }
+
     /** ================= OUTWARD (direct + mixed) ================= */
     public function confirmOutward(OutwardEntry $entry, int $userId): OutwardEntry
     {
@@ -675,12 +770,23 @@ class InventoryLedgerService
         ];
     }
 
-    /** Dashboard KPIs (real DB, company-scoped). */
+    /** Dashboard KPIs (real DB, company-scoped). Trashed inward/outward entries are excluded. */
     public function dashboardKpis(int $companyId, ?int $branchId = null, ?string $from = null, ?string $to = null): array
     {
+        $trashedInwardIds = InwardEntry::onlyTrashed()->select('id');
+        $trashedOutwardIds = OutwardEntry::onlyTrashed()->select('id');
+
         $tx = InventoryTransaction::where('status', 'POSTED')
             ->where('company_id', $companyId)
-            ->where(fn($q) => $q->whereNull('reference_type')->orWhereNotIn('reference_type', ['SETTLEMENT_BILL', 'Settlement Bill', 'SETTLEMENT']));
+            ->where(fn($q) => $q->whereNull('reference_type')->orWhereNotIn('reference_type', ['SETTLEMENT_BILL', 'Settlement Bill', 'SETTLEMENT']))
+            ->whereNot(function ($q) use ($trashedInwardIds) {
+                $q->whereIn('reference_type', ['INWARD', 'INWARD_CANCEL'])
+                  ->whereIn('reference_id', $trashedInwardIds);
+            })
+            ->whereNot(function ($q) use ($trashedOutwardIds) {
+                $q->whereIn('reference_type', ['OUTWARD', 'OUTWARD_CANCEL'])
+                  ->whereIn('reference_id', $trashedOutwardIds);
+            });
         if ($branchId) $tx->where('branch_id', $branchId);
         if ($from) $tx->whereDate('date', '>=', $from);
         if ($to) $tx->whereDate('date', '<=', $to);

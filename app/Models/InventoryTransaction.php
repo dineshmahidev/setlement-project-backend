@@ -4,9 +4,12 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class InventoryTransaction extends Model
 {
+    use SoftDeletes;
+
     protected $fillable = [
         'transaction_number', 'date', 'company_id', 'branch_id', 'item_id', 'type',
         'quantity', 'signed_quantity', 'rate', 'amount', 'unit_id', 'vehicle_id',

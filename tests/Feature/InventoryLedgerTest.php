@@ -206,4 +206,59 @@ class InventoryLedgerTest extends TestCase
         // Both movements posted
         $this->assertEquals(2, InventoryTransaction::where('company_id', $this->company->id)->whereIn('type', ['TRANSFER_OUT', 'TRANSFER_IN'])->count());
     }
+
+    public function test_trash_inward_subtracts_stock_but_lot_remains_visible(): void
+    {
+        $in = $this->makeInward([['item_id' => $this->item->id, 'lot_number' => 'L1', 'quantity' => 10, 'oil_pct' => 18, 'rate' => 100]]);
+        $this->ledger->confirmInward($in->fresh('items'), $this->userId);
+        $lot = Lot::where('lot_number', 'L1')->first();
+        $this->assertEquals(10, (float) $lot->available_qty);
+
+        $this->ledger->trashInward($in->fresh('items'));
+
+        // Entry trashed, stock subtracted, but the lot itself is NOT deleted (0-stock stays listed)
+        $this->assertTrue($in->fresh()->trashed());
+        $lot->refresh();
+        $this->assertNotNull(Lot::where('lot_number', 'L1')->first());
+        $this->assertEquals(0, (float) $lot->available_qty);
+        $this->assertEquals(0, $this->ledger->availableQty($this->company->id, $this->branch->id, $this->item->id));
+    }
+
+    public function test_lot_delete_trashes_lot_and_transactions_then_restores(): void
+    {
+        $in = $this->makeInward([['item_id' => $this->item->id, 'lot_number' => 'L9', 'quantity' => 5, 'oil_pct' => 18, 'rate' => 100]]);
+        $this->ledger->confirmInward($in->fresh('items'), $this->userId);
+        $lot = Lot::where('lot_number', 'L9')->first();
+
+        // Mirrors LotController::destroy — lot + dependent transactions to trash
+        DB::transaction(function () use ($lot) {
+            InventoryTransaction::where('lot_number', $lot->lot_number)
+                ->where('branch_id', $lot->branch_id)
+                ->where('item_id', $lot->item_id)
+                ->delete();
+            $lot->delete();
+        });
+
+        // Hidden from live views, sitting in trash with its transactions
+        $this->assertNull(Lot::where('lot_number', 'L9')->first());
+        $this->assertTrue($lot->fresh()->trashed());
+        $this->assertEquals(0, InventoryTransaction::where('lot_number', 'L9')->count());
+        $this->assertGreaterThan(0, InventoryTransaction::onlyTrashed()->where('lot_number', 'L9')->count());
+        $this->assertEquals(0, $this->ledger->availableQty($this->company->id, $this->branch->id, $this->item->id));
+
+        // Mirrors TrashController::restore (lot) — everything comes back
+        DB::transaction(function () use ($lot) {
+            $lot->restore();
+            InventoryTransaction::onlyTrashed()
+                ->where('lot_number', $lot->lot_number)
+                ->where('branch_id', $lot->branch_id)
+                ->where('item_id', $lot->item_id)
+                ->restore();
+        });
+
+        $this->assertNotNull(Lot::where('lot_number', 'L9')->first());
+        $this->assertEquals(5, (float) $lot->fresh()->available_qty);
+        $this->assertGreaterThan(0, InventoryTransaction::where('lot_number', 'L9')->count());
+        $this->assertEquals(5, $this->ledger->availableQty($this->company->id, $this->branch->id, $this->item->id));
+    }
 }

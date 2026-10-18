@@ -48,15 +48,16 @@ class ReportController extends Controller
         $vendorId = $request->get('vendor_id');
         $productId = $request->get('product_id');
 
-        // Reports are isolated to the branches the requester may see
+        // Reports are isolated to the branches the requester may see inside the
+        // active company. Fail closed: an empty array means "nothing visible"
+        // (filters to zero rows) — never fall open to an unscoped query.
         $allowed = $this->allowedBranchIds();
         if ($allowed !== null) {
             if ($branchId) {
-                $matched = array_values(array_intersect(
+                $branchId = array_values(array_intersect(
                     array_map('intval', (array) $branchId),
                     array_map('intval', $allowed)
                 ));
-                $branchId = $matched ?: $allowed;
             } else {
                 $branchId = $allowed;
             }
@@ -88,12 +89,34 @@ class ReportController extends Controller
         return $this->activeCompanyId();
     }
 
+    /** Fail-closed branch filter: an empty array matches nothing (0 = 1). */
+    protected function applyBranchFilter($query, $branchId, string $column = 'branch_id')
+    {
+        if (is_array($branchId)) {
+            return $query->whereIn($column, $branchId);
+        }
+        if ($branchId !== null && $branchId !== '') {
+            return $query->where($column, $branchId);
+        }
+        return $query;
+    }
+
+    /** Defence in depth: document reports follow their branch's company. */
+    protected function applyCompanyBranch($query)
+    {
+        $companyId = $this->activeCompanyId();
+        if ($companyId !== null) {
+            $query->whereHas('branch', fn ($q) => $q->where('company_id', $companyId));
+        }
+        return $query;
+    }
+
     protected function getStockReport($branchId, $itemId = null)
     {
         $q = \App\Models\Lot::with(['item:id,code,name,material_type', 'grade:id,code,name', 'branch:id,branch_name,branch_code'])
             ->where('status', 'OPEN')->where('available_qty', '>', 0)
             ->where('company_id', $this->companyId());
-        if ($branchId) $q->whereIn('branch_id', (array) $branchId);
+        $this->applyBranchFilter($q, $branchId);
         if ($itemId) $q->where('item_id', $itemId);
         $lots = $q->orderBy('branch_id')->orderBy('item_id')->get();
 
@@ -108,7 +131,7 @@ class ReportController extends Controller
     {
         $q = \App\Models\Lot::with(['item:id,code,name', 'grade:id,code,name', 'branch:id,branch_name'])
             ->where('company_id', $this->companyId());
-        if ($branchId) $q->whereIn('branch_id', (array) $branchId);
+        $this->applyBranchFilter($q, $branchId);
         if ($itemId) $q->where('item_id', $itemId);
         return $q->orderBy('id')->get()->map(fn ($l) => [
             'godown' => $l->branch?->branch_name, 'item' => $l->item?->name, 'lot_number' => $l->lot_number,
@@ -125,7 +148,7 @@ class ReportController extends Controller
             ->where(function ($query) {
                 $query->whereNull('party_id')->orWhereHas('party', fn ($pq) => $pq->where('status', 'active'));
             });
-        if ($branchId) $q->whereIn('branch_id', (array) $branchId);
+        $this->applyBranchFilter($q, $branchId);
         return $q->orderBy('date')->get()->map(fn ($e) => [
             'entry_number' => $e->entry_number, 'date' => $e->date, 'godown' => $e->branch?->branch_name,
             'party' => $e->party?->vendor_name, 'items_count' => $e->items->count(),
@@ -140,7 +163,7 @@ class ReportController extends Controller
             ->where(function ($query) {
                 $query->whereNull('party_id')->orWhereHas('party', fn ($pq) => $pq->where('status', 'active'));
             });
-        if ($branchId) $q->whereIn('branch_id', (array) $branchId);
+        $this->applyBranchFilter($q, $branchId);
         return $q->orderBy('date')->get()->map(fn ($e) => [
             'entry_number' => $e->entry_number, 'date' => $e->date, 'godown' => $e->branch?->branch_name,
             'dispatch_type' => $e->dispatch_type, 'party' => $e->party?->vendor_name, 'destination' => $e->destination,
@@ -153,7 +176,7 @@ class ReportController extends Controller
     {
         $q = \App\Models\Lot::with(['item:id,code,name', 'branch:id,branch_name'])
             ->where('company_id', $this->companyId())->where('available_qty', '>', 0);
-        if ($branchId) $q->whereIn('branch_id', (array) $branchId);
+        $this->applyBranchFilter($q, $branchId);
         $lots = $q->get();
 
         $byItem = $lots->groupBy('item_id')->map(function ($g) {
@@ -174,7 +197,7 @@ class ReportController extends Controller
     {
         $q = \App\Models\ProductionBatch::with(['outputItem:id,name,code', 'sourceBranch:id,branch_name', 'inputs', 'outputs'])
             ->whereBetween('date', [$from, $to])->where('company_id', $this->companyId());
-        if ($branchId) $q->whereIn('source_branch_id', (array) $branchId);
+        $this->applyBranchFilter($q, $branchId, 'source_branch_id');
         return $q->orderBy('date')->get()->map(fn ($b) => [
             'batch_number' => $b->batch_number, 'date' => $b->date, 'godown' => $b->sourceBranch?->branch_name,
             'output_item' => $b->outputItem?->name, 'input_total' => round((float) $b->inputs->sum('quantity'), 3),
@@ -188,7 +211,8 @@ class ReportController extends Controller
             ->whereBetween('settlement_date', [$from, $to])
             ->whereHas('vendor', fn ($q) => $q->where('status', 'active'));
 
-        if ($branchId) $query->whereIn('branch_id', (array) $branchId);
+        $this->applyCompanyBranch($query);
+        $this->applyBranchFilter($query, $branchId);
         if ($vendorId) $query->where('vendor_id', $vendorId);
         if ($productId) $query->where('product_id', $productId);
 
@@ -201,7 +225,8 @@ class ReportController extends Controller
             ->whereBetween('date', [$from, $to])
             ->whereHas('vendor', fn ($q) => $q->where('status', 'active'));
 
-        if ($branchId) $query->whereIn('branch_id', (array) $branchId);
+        $this->applyCompanyBranch($query);
+        $this->applyBranchFilter($query, $branchId);
         if ($vendorId) $query->where('vendor_id', $vendorId);
 
         return $query->orderBy('date', 'desc')->get();
@@ -213,7 +238,8 @@ class ReportController extends Controller
             ->whereBetween('invoice_date', [$from, $to])
             ->whereHas('vendor', fn ($q) => $q->where('status', 'active'));
 
-        if ($branchId) $query->whereIn('branch_id', (array) $branchId);
+        $this->applyCompanyBranch($query);
+        $this->applyBranchFilter($query, $branchId);
         if ($vendorId) $query->where('vendor_id', $vendorId);
 
         return $query->orderBy('invoice_date', 'desc')->get();
@@ -225,7 +251,10 @@ class ReportController extends Controller
             ->join('branches', 'settlements.branch_id', '=', 'branches.id')
             ->whereBetween('settlements.settlement_date', [$from, $to])
             ->where('settlements.status', '!=', 'cancelled');
-        if ($branchId) $query->whereIn('settlements.branch_id', (array) $branchId);
+        if (($companyId = $this->activeCompanyId()) !== null) {
+            $query->where('branches.company_id', $companyId);
+        }
+        $this->applyBranchFilter($query, $branchId, 'settlements.branch_id');
 
         return $query->select(
                 'branches.branch_code',
@@ -246,7 +275,14 @@ class ReportController extends Controller
             ->leftJoin('products', 'settlements.product_id', '=', 'products.id')
             ->whereBetween('settlements.settlement_date', [$from, $to])
             ->where('settlements.status', '!=', 'cancelled');
-        if ($branchId) $query->whereIn('settlements.branch_id', (array) $branchId);
+        if (($companyId = $this->activeCompanyId()) !== null) {
+            $query->whereExists(function ($q) use ($companyId) {
+                $q->select(DB::raw(1))->from('branches')
+                    ->whereColumn('branches.id', 'settlements.branch_id')
+                    ->where('branches.company_id', $companyId);
+            });
+        }
+        $this->applyBranchFilter($query, $branchId, 'settlements.branch_id');
 
         return $query->select(
                 DB::raw('COALESCE(products.product_name, "Rice Bran Grade II") as product_name'),
@@ -268,7 +304,14 @@ class ReportController extends Controller
         $settlementsQuery = DB::table('settlements')
             ->whereBetween('settlement_date', [$from, $to])
             ->where('status', '!=', 'cancelled');
-        if ($branchId) $settlementsQuery->whereIn('branch_id', (array) $branchId);
+        if (($companyId = $this->activeCompanyId()) !== null) {
+            $settlementsQuery->whereExists(function ($q) use ($companyId) {
+                $q->select(DB::raw(1))->from('branches')
+                    ->whereColumn('branches.id', 'settlements.branch_id')
+                    ->where('branches.company_id', $companyId);
+            });
+        }
+        $this->applyBranchFilter($settlementsQuery, $branchId);
 
         $settlementGst = $settlementsQuery->select(
             DB::raw('"Settlement Bills" as document_type'),
@@ -282,7 +325,14 @@ class ReportController extends Controller
         $debitNotesQuery = DB::table('debit_notes')
             ->whereBetween('date', [$from, $to])
             ->where('status', '!=', 'cancelled');
-        if ($branchId) $debitNotesQuery->whereIn('branch_id', (array) $branchId);
+        if (($companyId = $this->activeCompanyId()) !== null) {
+            $debitNotesQuery->whereExists(function ($q) use ($companyId) {
+                $q->select(DB::raw(1))->from('branches')
+                    ->whereColumn('branches.id', 'debit_notes.branch_id')
+                    ->where('branches.company_id', $companyId);
+            });
+        }
+        $this->applyBranchFilter($debitNotesQuery, $branchId);
 
         $debitNoteGst = $debitNotesQuery->select(
             DB::raw('"Debit Notes (Rebates)" as document_type'),
@@ -307,7 +357,8 @@ class ReportController extends Controller
             ->whereBetween('settlement_date', [$from, $to])
             ->whereHas('vendor', fn ($q) => $q->where('status', 'active'));
 
-        if ($branchId) $query->whereIn('branch_id', (array) $branchId);
+        $this->applyCompanyBranch($query);
+        $this->applyBranchFilter($query, $branchId);
         if ($vendorId) $query->where('vendor_id', $vendorId);
 
         return $query->orderBy('settlement_date', 'desc')->get();
@@ -341,8 +392,9 @@ class ReportController extends Controller
             ->whereIn('document_type', ['payment', 'receipt', 'payment_adjustment', 'receipt_adjustment'])
             ->whereBetween('transaction_date', [$from, $to]);
 
+        $this->applyCompanyBranch($query);
         if ($vendorId) $query->where('vendor_id', $vendorId);
-        if ($branchId) $query->whereIn('branch_id', (array) $branchId);
+        $this->applyBranchFilter($query, $branchId);
 
         return $query->orderBy('transaction_date', 'desc')->get();
     }

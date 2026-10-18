@@ -3,9 +3,12 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Lot extends Model
 {
+    use SoftDeletes;
+
     protected $fillable = [
         'company_id', 'branch_id', 'item_id', 'grade_id', 'lot_number',
         'oil_pct', 'opening_qty', 'received_qty', 'issued_qty',

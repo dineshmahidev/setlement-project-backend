@@ -24,28 +24,43 @@ class DashboardController extends Controller
         $user = $request->user();
         $companyId = $this->activeCompanyId();
         $companyBranchIds = $companyId ? Branch::where('company_id', $companyId)->pluck('id')->all() : null;
-        $explicitBranch = $request->get('branch_id');
-        $branchId = $explicitBranch ?: ($companyBranchIds ?: null);
-
         $allowedBranchIds = $user ? $user->allowedBranchIds($companyId) : null;
+        $explicitBranch = $request->get('branch_id');
 
-        // Clamp a requested branch to what the user may see inside this company
-        if ($branchId && is_array($allowedBranchIds)) {
-            $requested = array_map('intval', (array) $branchId);
-            $branchId = array_values(array_intersect($requested, array_map('intval', $allowedBranchIds))) ?: $allowedBranchIds;
-        }
-
-        // No explicit branch: fall back to every branch the user may see
-        if (! $branchId && $user) {
+        // Resolve the visible branch set. Fail closed: an empty array means
+        // "nothing visible in this company" (filters to zero rows). Only null
+        // means "unrestricted" (super admin with no company context).
+        if ($explicitBranch) {
+            $branchId = is_array($allowedBranchIds)
+                ? array_values(array_intersect(array_map('intval', (array) $explicitBranch), array_map('intval', $allowedBranchIds)))
+                : $explicitBranch;
+        } elseif ($companyBranchIds !== null) {
+            // Company context: restrict to this company's branches (intersected with the user's allowed set).
+            $branchId = is_array($allowedBranchIds)
+                ? array_values(array_intersect($companyBranchIds, array_map('intval', $allowedBranchIds)))
+                : $companyBranchIds;
+        } else {
+            // No company context (super admin global view): fall back to the user's allowed branches.
             $branchId = $allowedBranchIds;
         }
 
         $applyBranch = function ($query, $column = 'branch_id') use ($branchId) {
-            if (!$branchId) return $query;
             if (is_array($branchId)) {
+                // Empty array => whereIn([]) => 0 = 1 => no rows (fail closed).
                 return $query->whereIn($column, $branchId);
             }
-            return $query->where($column, $branchId);
+            if ($branchId !== null && $branchId !== '') {
+                return $query->where($column, $branchId);
+            }
+            return $query; // unrestricted only when no company context
+        };
+
+        // Defence in depth: settlements/debit notes always follow their branch's company.
+        $applyCompanyBranch = function ($query) use ($companyId) {
+            if ($companyId !== null) {
+                $query->whereHas('branch', fn ($q) => $q->where('company_id', $companyId));
+            }
+            return $query;
         };
 
         $applyCompany = function ($query, $column = 'company_id') {
@@ -56,14 +71,13 @@ class DashboardController extends Controller
         $totalVendors = $applyCompany(Vendor::where('status', 'active'))->count();
 
         $totalBranchesQuery = $applyCompany(Branch::where('status', 'active'));
-        if ($branchId) {
-            $applyBranch($totalBranchesQuery, 'id');
-        }
+        $applyBranch($totalBranchesQuery, 'id');
         $totalBranches = $totalBranchesQuery->count();
 
         $todaySettlementQuery = Settlement::whereDate('settlement_date', $today)
             ->where('status', '!=', 'cancelled')
             ->whereHas('vendor', fn ($q) => $q->where('status', 'active'));
+        $applyCompanyBranch($todaySettlementQuery);
         $applyBranch($todaySettlementQuery, 'branch_id');
 
         $todaySettlementsCount = (clone $todaySettlementQuery)->count();
@@ -73,6 +87,7 @@ class DashboardController extends Controller
         $periodSettlementQuery = Settlement::where('status', '!=', 'cancelled')
             ->whereBetween('settlement_date', [$startDate, $endDate])
             ->whereHas('vendor', fn ($q) => $q->where('status', 'active'));
+        $applyCompanyBranch($periodSettlementQuery);
         $applyBranch($periodSettlementQuery, 'branch_id');
         $totalSettlementsCount = (clone $periodSettlementQuery)->count();
         $totalSettlementsValue = (clone $periodSettlementQuery)->sum('net_payable');
@@ -85,6 +100,7 @@ class DashboardController extends Controller
                   ->orWhereNull('transaction_type');
             })
             ->whereBetween('date', [$startDate, $endDate]);
+        $applyCompanyBranch($debitQuery);
         $applyBranch($debitQuery, 'branch_id');
         $totalDebitCount = (clone $debitQuery)->count();
         $totalDebitValue = (clone $debitQuery)->sum('total_amount');
@@ -94,11 +110,13 @@ class DashboardController extends Controller
             ->whereHas('vendor', fn ($q) => $q->where('status', 'active'))
             ->where('transaction_type', 'credit')
             ->whereBetween('date', [$startDate, $endDate]);
+        $applyCompanyBranch($creditQuery);
         $applyBranch($creditQuery, 'branch_id');
         $totalCreditCount = (clone $creditQuery)->count();
         $totalCreditValue = (clone $creditQuery)->sum('total_amount');
 
         $debitNoteQuery = DebitNote::where('status', 'draft');
+        $applyCompanyBranch($debitNoteQuery);
         $applyBranch($debitNoteQuery, 'branch_id');
         $pendingDebitNotesCount = $debitNoteQuery->count();
 
@@ -125,6 +143,9 @@ class DashboardController extends Controller
             ->join('branches', 'settlements.branch_id', '=', 'branches.id')
             ->where('settlements.status', '!=', 'cancelled')
             ->whereBetween('settlements.settlement_date', [$startDate, $endDate]);
+        if ($companyId !== null) {
+            $branchWiseQuery->where('branches.company_id', $companyId);
+        }
         $applyBranch($branchWiseQuery, 'settlements.branch_id');
         $branchWise = $branchWiseQuery->select('branches.branch_name', DB::raw('SUM(settlements.net_payable) as total_value'), DB::raw('COUNT(settlements.id) as count'))
             ->groupBy('branches.id', 'branches.branch_name')
@@ -149,7 +170,7 @@ class DashboardController extends Controller
             ->where('vendors.status', 'active')
             ->where('settlements.status', '!=', 'cancelled')
             ->where('settlements.settlement_date', '>=', Carbon::now()->subMonths(5)->startOfMonth()->toDateString());
-        $applyBranch($monthlyTrendQuery, 'branch_id');
+        $applyBranch($monthlyTrendQuery, 'settlements.branch_id');
         $monthlyTrend = $monthlyTrendQuery->select(
                 DB::raw("DATE_FORMAT(settlements.settlement_date, '%Y-%m') as month"),
                 DB::raw('SUM(settlements.net_payable) as total_value'),
@@ -180,9 +201,10 @@ class DashboardController extends Controller
 
         // Recent Settlements
         $recentSettlementsQuery = Settlement::whereHas('vendor', fn ($q) => $q->where('status', 'active'))
-            ->with(['branch', 'vendor', 'product'])
+            ->with(['branch', 'vendor', 'product', 'debitNotes:id,settlement_id,transaction_type,status,total_amount'])
             ->orderBy('settlement_date', 'desc')
             ->orderBy('id', 'desc');
+        $applyCompanyBranch($recentSettlementsQuery);
         $applyBranch($recentSettlementsQuery, 'branch_id');
         $recentSettlements = $recentSettlementsQuery->limit(8)->get();
 

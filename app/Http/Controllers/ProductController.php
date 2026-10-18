@@ -46,6 +46,14 @@ class ProductController extends Controller
         $data = $request->validated();
         $data['company_id'] = $this->activeCompanyId();
 
+        if (empty($data['product_code'])) {
+            $code = 'PROD-' . random_int(100, 999);
+            while (Product::where('product_code', $code)->exists()) {
+                $code = 'PROD-' . random_int(1000, 99999);
+            }
+            $data['product_code'] = $code;
+        }
+
         $product = Product::create($data);
 
         AuditLog::logAction('created', 'Product', $product->id, $product->product_code, null, $product->toArray(), 'Product created');

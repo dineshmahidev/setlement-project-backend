@@ -249,6 +249,7 @@ class CompanyController extends Controller
             'banner_path' => $company->banner_path,
             'signature_path' => $company->signature_path,
             'status' => $company->status,
+            'sort_order' => $company->sort_order,
             'branches' => $company->branches->map(fn ($b) => [
                 'id' => $b->id,
                 'company_id' => $b->company_id,

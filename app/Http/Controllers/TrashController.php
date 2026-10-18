@@ -27,6 +27,7 @@ class TrashController extends Controller
         'vendor' => Vendor::class,
         'item' => Item::class,
         'branch' => Branch::class,
+        'lot' => \App\Models\Lot::class,
     ];
 
     /**
@@ -35,24 +36,14 @@ class TrashController extends Controller
     public function index(Request $request): JsonResponse
     {
         $type = $request->query('type', 'all');
-        $companyId = $request->query('company_id') ?? auth()->user()?->company_id;
+        // Prefer the middleware-resolved active company; User has no company_id column.
+        $companyId = $request->query('company_id') ?: $this->activeCompanyId();
 
         $counts = [];
         $items = [];
 
         foreach ($this->models as $key => $modelClass) {
-            $query = $modelClass::onlyTrashed();
-
-            // Filter by company if the model has company_id
-            if ($companyId) {
-                if (in_array($key, ['inward', 'outward', 'production', 'vendor', 'item', 'branch'])) {
-                    $query->where('company_id', $companyId);
-                } elseif (in_array($key, ['settlement', 'debit_note', 'invoice'])) {
-                    $query->whereHas('branch', function ($q) use ($companyId) {
-                        $q->where('company_id', $companyId);
-                    });
-                }
-            }
+            $query = $this->scopeTrashQuery($modelClass::onlyTrashed(), $key, $companyId);
 
             $count = $query->count();
             $counts[$key] = $count;
@@ -80,6 +71,51 @@ class TrashController extends Controller
     }
 
     /**
+     * Restrict a trash query to the active company (by company_id column or via branch).
+     */
+    private function scopeTrashQuery($query, string $type, $companyId)
+    {
+        if (! $companyId) {
+            return $query;
+        }
+
+        if (in_array($type, ['inward', 'outward', 'production', 'vendor', 'item', 'branch', 'lot'], true)) {
+            $query->where('company_id', $companyId);
+        } elseif (in_array($type, ['settlement', 'debit_note', 'invoice'], true)) {
+            $query->whereHas('branch', fn ($q) => $q->where('company_id', $companyId));
+        }
+
+        return $query;
+    }
+
+    /**
+     * 404 when a trashed record belongs to another company.
+     */
+    private function guardTrashCompany(string $type, $item): void
+    {
+        $companyId = $this->activeCompanyId();
+        if ($companyId === null) {
+            return; // super admin with no company context
+        }
+
+        $attrs = $item->getAttributes();
+
+        if (array_key_exists('company_id', $attrs)) {
+            if ($attrs['company_id'] === null || (int) $attrs['company_id'] !== $companyId) {
+                abort(404, 'Not found.');
+            }
+            return;
+        }
+
+        if (array_key_exists('branch_id', $attrs) && $attrs['branch_id'] !== null) {
+            $branchCompanyId = \App\Models\Branch::withTrashed()->where('id', $attrs['branch_id'])->value('company_id');
+            if ($branchCompanyId === null || (int) $branchCompanyId !== $companyId) {
+                abort(404, 'Not found.');
+            }
+        }
+    }
+
+    /**
      * Restore a soft-deleted item
      */
     public function restore(string $type, int $id): JsonResponse
@@ -95,7 +131,20 @@ class TrashController extends Controller
             return response()->json(['success' => false, 'message' => 'Item not found in trash.'], 404);
         }
 
-        $item->restore();
+        $this->guardTrashCompany($type, $item);
+
+        if ($type === 'lot') {
+            DB::transaction(function () use ($item) {
+                $item->restore();
+                \App\Models\InventoryTransaction::onlyTrashed()
+                    ->where('lot_number', $item->lot_number)
+                    ->where('branch_id', $item->branch_id)
+                    ->where('item_id', $item->item_id)
+                    ->restore();
+            });
+        } else {
+            $item->restore();
+        }
 
         return response()->json([
             'success' => true,
@@ -119,6 +168,8 @@ class TrashController extends Controller
             return response()->json(['success' => false, 'message' => 'Item not found in trash.'], 404);
         }
 
+        $this->guardTrashCompany($type, $item);
+
         DB::transaction(function () use ($type, $item) {
             // Delete dependent child rows if any
             if ($type === 'inward' && method_exists($item, 'items')) {
@@ -130,6 +181,12 @@ class TrashController extends Controller
                 if (method_exists($item, 'outputs')) $item->outputs()->delete();
             } elseif ($type === 'debit_note' && method_exists($item, 'items')) {
                 $item->items()->delete();
+            } elseif ($type === 'lot') {
+                \App\Models\InventoryTransaction::onlyTrashed()
+                    ->where('lot_number', $item->lot_number)
+                    ->where('branch_id', $item->branch_id)
+                    ->where('item_id', $item->item_id)
+                    ->forceDelete();
             }
 
             $item->forceDelete();
@@ -148,14 +205,15 @@ class TrashController extends Controller
     {
         $type = $request->input('type', 'all');
         $typesToEmpty = ($type === 'all' || empty($type)) ? array_keys($this->models) : [$type];
+        $companyId = $request->input('company_id') ?: $this->activeCompanyId();
 
         $deletedCount = 0;
 
-        DB::transaction(function () use ($typesToEmpty, &$deletedCount) {
+        DB::transaction(function () use ($typesToEmpty, &$deletedCount, $companyId) {
             foreach ($typesToEmpty as $t) {
                 if (!isset($this->models[$t])) continue;
                 $modelClass = $this->models[$t];
-                $records = $modelClass::onlyTrashed()->get();
+                $records = $this->scopeTrashQuery($modelClass::onlyTrashed(), $t, $companyId)->get();
                 foreach ($records as $item) {
                     if ($t === 'inward' && method_exists($item, 'items')) {
                         $item->items()->delete();
@@ -166,6 +224,12 @@ class TrashController extends Controller
                         if (method_exists($item, 'outputs')) $item->outputs()->delete();
                     } elseif ($t === 'debit_note' && method_exists($item, 'items')) {
                         $item->items()->delete();
+                    } elseif ($t === 'lot') {
+                        \App\Models\InventoryTransaction::onlyTrashed()
+                            ->where('lot_number', $item->lot_number)
+                            ->where('branch_id', $item->branch_id)
+                            ->where('item_id', $item->item_id)
+                            ->forceDelete();
                     }
                     $item->forceDelete();
                     $deletedCount++;
@@ -246,6 +310,13 @@ class TrashController extends Controller
             case 'branch':
                 $title = $rec->branch_name ?? ('Godown #' . $rec->id);
                 $subtitle = "Code: {$rec->branch_code} | City: {$rec->city}";
+                break;
+
+            case 'lot':
+                $rec->loadMissing(['item:id,name,code', 'branch:id,branch_name']);
+                $title = 'Lot ' . ($rec->lot_number ?? '#' . $rec->id);
+                $subtitle = "Item: " . ($rec->item?->name ?? '-') . " | Godown: " . ($rec->branch?->branch_name ?? '-') . " | Avail: " . number_format((float) ($rec->available_qty ?? 0), 3);
+                $amount = $rec->stock_value;
                 break;
         }
 

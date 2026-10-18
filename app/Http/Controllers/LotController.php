@@ -72,6 +72,14 @@ class LotController extends Controller
         ]);
 
         $movements = \App\Models\InventoryTransaction::where('status', 'POSTED')
+            ->whereNot(function ($q) {
+                $q->whereIn('reference_type', ['INWARD', 'INWARD_CANCEL'])
+                  ->whereIn('reference_id', \App\Models\InwardEntry::onlyTrashed()->select('id'));
+            })
+            ->whereNot(function ($q) {
+                $q->whereIn('reference_type', ['OUTWARD', 'OUTWARD_CANCEL'])
+                  ->whereIn('reference_id', \App\Models\OutwardEntry::onlyTrashed()->select('id'));
+            })
             ->where(function ($q) use ($lot) {
                 if ($lot->company_id) {
                     $q->where('company_id', $lot->company_id);
@@ -82,6 +90,17 @@ class LotController extends Controller
             ->where('lot_number', $lot->lot_number)
             ->orderBy('date')->orderBy('id')->get();
 
+        // Attach party names (vendor / party) for the movement history
+        $vendorIds = $movements->pluck('vendor_id')
+            ->merge($movements->where('party_type', 'vendor')->pluck('party_id'))
+            ->filter()->unique();
+        $vendors = \App\Models\Vendor::whereIn('id', $vendorIds)->pluck('vendor_name', 'id');
+        foreach ($movements as $m) {
+            $m->party_name = $vendors[$m->vendor_id]
+                ?? ($m->party_type === 'vendor' ? ($vendors[$m->party_id] ?? null) : null)
+                ?? $m->customer;
+        }
+
         $lotData = $lot->toArray();
         $lotData['lot'] = $lot;
         $lotData['movements'] = $movements;
@@ -91,6 +110,153 @@ class LotController extends Controller
             'data' => $lotData,
             ...$lotData,
         ]);
+    }
+
+    /**
+     * Move a lot to trash along with its dependent transactions.
+     * Both are restorable from the Trash screen.
+     * Only lots with zero available stock can be deleted.
+     */
+    public function destroy(Lot $lot)
+    {
+        $this->guardCompanyOwnership($lot);
+
+        if ((float) $lot->available_qty > 0) {
+            return response()->json([
+                'success' => false,
+                'message' => sprintf('Lot %s still has %s MT available stock. Dispatch / transfer the remaining quantity first — only zero-stock lots can be deleted.', $lot->lot_number, $lot->available_qty),
+            ], 422);
+        }
+
+        \Illuminate\Support\Facades\DB::transaction(function () use ($lot) {
+            \App\Models\InventoryTransaction::where('lot_number', $lot->lot_number)
+                ->where('branch_id', $lot->branch_id)
+                ->where('item_id', $lot->item_id)
+                ->delete();
+            // Zero-out balances so the lot carries no residual stock value into trash
+            $lot->update([
+                'available_qty' => 0,
+                'stock_value' => 0,
+                'unit_cost' => 0,
+                'reserved_qty' => 0,
+                'status' => 'CLOSED',
+            ]);
+            $lot->delete();
+        });
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Lot moved to trash with its transaction history.',
+        ]);
+    }
+
+    /**
+     * Full lot statement PDF: opening balance + every movement (entry particular)
+     * within a selected duration, with running balance and closing stock.
+     */
+    public function movementsPdf(Lot $lot, Request $request)
+    {
+        $this->guardCompanyOwnership($lot);
+
+        $dateFrom = $request->date_from ?: null;
+        $dateTo = $request->date_to ?: null;
+
+        $lot->load([
+            'item:id,code,name,material_type',
+            'item.unit:id,code,name',
+            'unit:id,code,name',
+            'grade:id,code,name',
+            'branch:id,branch_name,branch_code',
+            'company:id,company_name',
+        ]);
+
+        $baseQuery = fn () => \App\Models\InventoryTransaction::where('status', 'POSTED')
+            ->whereNot(function ($q) {
+                $q->whereIn('reference_type', ['INWARD', 'INWARD_CANCEL'])
+                  ->whereIn('reference_id', \App\Models\InwardEntry::onlyTrashed()->select('id'));
+            })
+            ->whereNot(function ($q) {
+                $q->whereIn('reference_type', ['OUTWARD', 'OUTWARD_CANCEL'])
+                  ->whereIn('reference_id', \App\Models\OutwardEntry::onlyTrashed()->select('id'));
+            })
+            ->where('branch_id', $lot->branch_id)
+            ->where('item_id', $lot->item_id)
+            ->where('lot_number', $lot->lot_number)
+            ->orderBy('date')->orderBy('id');
+
+        // Opening balance = everything strictly before the duration start
+        $opening = 0.0;
+        if ($dateFrom) {
+            $opening = (float) (clone $baseQuery())->whereDate('date', '<', $dateFrom)->sum('signed_quantity');
+        }
+
+        $movements = (clone $baseQuery())
+            ->when($dateFrom, fn ($q) => $q->whereDate('date', '>=', $dateFrom))
+            ->when($dateTo, fn ($q) => $q->whereDate('date', '<=', $dateTo))
+            ->get();
+
+        // Attach party names (vendor / party)
+        $vendorIds = $movements->pluck('vendor_id')
+            ->merge($movements->where('party_type', 'vendor')->pluck('party_id'))
+            ->filter()->unique();
+        $vendors = \App\Models\Vendor::whereIn('id', $vendorIds)->pluck('vendor_name', 'id');
+
+        $balance = $opening;
+        $rows = $movements->map(function ($m) use (&$balance, $vendors) {
+            $signed = (float) $m->signed_quantity;
+            $balance += $signed;
+            $partyName = $vendors[$m->vendor_id]
+                ?? ($m->party_type === 'vendor' ? ($vendors[$m->party_id] ?? null) : null)
+                ?? $m->customer;
+
+            return [
+                'date' => $m->date,
+                'type' => $m->type,
+                'direction' => $signed >= 0 ? 'IN' : 'OUT',
+                'quantity' => (float) $m->quantity,
+                'in_qty' => $signed >= 0 ? $signed : 0,
+                'out_qty' => $signed < 0 ? abs($signed) : 0,
+                'balance' => round($balance, 3),
+                'rate' => $m->rate,
+                'amount' => $m->amount,
+                'party_name' => $partyName,
+                'reference_type' => $m->reference_type,
+                'source_reference' => $m->source_reference,
+                'remarks' => $m->remarks,
+            ];
+        })->values();
+
+        $totIn = (float) $rows->sum('in_qty');
+        $totOut = (float) $rows->sum('out_qty');
+        $closing = round($opening + $totIn - $totOut, 3);
+
+        $company = app(\App\Services\PdfService::class)->resolveCompany($lot->branch_id);
+
+        $pdf = Pdf::loadView('pdf.lot_movements', [
+            'lot' => $lot,
+            'company' => $company,
+            'rows' => $rows,
+            'opening' => round($opening, 3),
+            'totIn' => $totIn,
+            'totOut' => $totOut,
+            'closing' => $closing,
+            'dateFrom' => $dateFrom,
+            'dateTo' => $dateTo,
+        ])->setPaper('a4', 'landscape');
+
+        $filename = 'Lot_Statement_'.$lot->lot_number;
+        if ($dateFrom && $dateTo) {
+            $filename .= '_'.$dateFrom.'_to_'.$dateTo;
+        } elseif ($dateFrom) {
+            $filename .= '_from_'.$dateFrom;
+        } elseif ($dateTo) {
+            $filename .= '_upto_'.$dateTo;
+        } else {
+            $filename .= '_'.date('Ymd_His');
+        }
+        $filename .= '.pdf';
+
+        return $pdf->stream($filename);
     }
 
     /** Lot-wise stock PDF export (optionally scoped to a duration via date_from / date_to). */

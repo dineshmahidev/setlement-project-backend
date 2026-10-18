@@ -212,18 +212,12 @@ class InwardController extends Controller
 
     public function destroy(InwardEntry $inward)
     {
-        $userId = (int) (auth()->id() ?? request()->user()?->id ?? 1);
         try {
-            DB::transaction(function () use ($inward, $userId) {
-                if ($inward->status === 'CONFIRMED') {
-                    $this->ledger->cancelInward($inward, $userId, 'Moved to trash');
-                }
-                $inward->delete();
-            });
+            $this->ledger->trashInward($inward);
 
             return response()->json([
                 'success' => true,
-                'message' => 'Inward entry deleted successfully',
+                'message' => 'Inward entry moved to trash',
             ]);
         } catch (\Throwable $e) {
             return response()->json([

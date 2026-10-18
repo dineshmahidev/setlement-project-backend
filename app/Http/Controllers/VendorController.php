@@ -102,6 +102,14 @@ class VendorController extends Controller
         $data = $request->validated();
         $data['company_id'] = $this->activeCompanyId();
 
+        if (empty($data['vendor_code'])) {
+            $code = 'VEND-' . random_int(100, 999);
+            while (Vendor::where('vendor_code', $code)->exists()) {
+                $code = 'VEND-' . random_int(1000, 99999);
+            }
+            $data['vendor_code'] = $code;
+        }
+
         $vendor = Vendor::create($data);
 
         AuditLog::logAction('created', 'Vendor', $vendor->id, $vendor->vendor_code, null, $vendor->toArray(), 'Vendor created');

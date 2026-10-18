@@ -132,7 +132,8 @@ Route::middleware(['auth:sanctum', 'company.scope'])->group(function () {
     Route::middleware('permission:inventory.view')->group(function () {
         Route::get('/lots/summary', [LotController::class, 'summary']);
         Route::get('/lots/pdf', [LotController::class, 'pdf']);
-        Route::apiResource('lots', LotController::class)->only(['index', 'show']);
+        Route::get('/lots/{lot}/movements/pdf', [LotController::class, 'movementsPdf']);
+        Route::apiResource('lots', LotController::class)->only(['index', 'show', 'destroy']);
     });
 
     // Inward (multi-item stock receipt)

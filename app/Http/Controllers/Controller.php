@@ -72,10 +72,20 @@ abstract class Controller
     }
 
     /**
-     * Scope an inventory transactions query to exclude records associated with inactive vendors.
+     * Scope an inventory transactions query to exclude records associated with inactive vendors
+     * AND transactions belonging to trashed (soft-deleted) inward/outward entries.
      */
     protected function scopeActiveVendorTransactions($query)
     {
+        // Exclude transactions from trashed inward/outward entries
+        $query->whereNot(function ($q) {
+            $q->whereIn('reference_type', ['INWARD', 'INWARD_CANCEL'])
+              ->whereIn('reference_id', \App\Models\InwardEntry::onlyTrashed()->select('id'));
+        })->whereNot(function ($q) {
+            $q->whereIn('reference_type', ['OUTWARD', 'OUTWARD_CANCEL'])
+              ->whereIn('reference_id', \App\Models\OutwardEntry::onlyTrashed()->select('id'));
+        });
+
         $inactiveIds = $this->inactiveVendorIds();
         $inactiveNames = $this->inactiveVendorNames();
         if (empty($inactiveIds) && empty($inactiveNames)) {

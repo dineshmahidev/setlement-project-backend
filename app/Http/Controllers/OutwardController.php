@@ -251,18 +251,12 @@ class OutwardController extends Controller
 
     public function destroy(OutwardEntry $outward)
     {
-        $userId = (int) (auth()->id() ?? request()->user()?->id ?? 1);
         try {
-            DB::transaction(function () use ($outward, $userId) {
-                if ($outward->status === 'CONFIRMED') {
-                    $this->ledger->cancelOutward($outward, $userId, 'Moved to trash');
-                }
-                $outward->delete();
-            });
+            $this->ledger->trashOutward($outward);
 
             return response()->json([
                 'success' => true,
-                'message' => 'Outward entry deleted successfully',
+                'message' => 'Outward entry moved to trash',
             ]);
         } catch (\Throwable $e) {
             return response()->json([

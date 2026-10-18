@@ -37,6 +37,23 @@ class SettlementController extends Controller
     }
 
     /**
+     * 404 when the settlement's branch belongs to another company.
+     * (guardBranchOwnership is a no-op when allowed_branch_ids is null.)
+     */
+    protected function guardSettlementCompany(Settlement $settlement): void
+    {
+        $companyId = $this->activeCompanyId();
+        if ($companyId === null) {
+            return; // no company context (super admin global view)
+        }
+
+        $branchCompanyId = $settlement->branch?->company_id;
+        if ($branchCompanyId === null || (int) $branchCompanyId !== $companyId) {
+            abort(404, 'Not found.');
+        }
+    }
+
+    /**
      * Instant calculation endpoint for frontend preview and validation
      */
     public function calculate(Request $request)
@@ -299,6 +316,7 @@ class SettlementController extends Controller
     public function show(Settlement $settlement)
     {
         $this->authorizeSettlementAccess();
+        $this->guardSettlementCompany($settlement);
         $this->guardBranchOwnership($settlement);
 
         $settlement->load(['branch.company', 'vendor', 'product', 'invoice', 'debitNotes.items', 'qualityTests', 'charges', 'creator']);
@@ -337,6 +355,7 @@ class SettlementController extends Controller
     public function update(SettlementRequest $request, Settlement $settlement)
     {
         $this->authorizeSettlementAccess($request);
+        $this->guardSettlementCompany($settlement);
         $this->guardBranchOwnership($settlement);
 
         if ($settlement->status === 'cancelled') {
@@ -500,6 +519,7 @@ class SettlementController extends Controller
     public function cancel(Request $request, Settlement $settlement)
     {
         $this->authorizeSettlementAccess($request);
+        $this->guardSettlementCompany($settlement);
         $this->guardBranchOwnership($settlement);
 
         $request->validate([
@@ -559,6 +579,7 @@ class SettlementController extends Controller
     public function pdf(Settlement $settlement)
     {
         $this->authorizeSettlementAccess();
+        $this->guardSettlementCompany($settlement);
         $this->guardBranchOwnership($settlement);
 
         $pdf = $this->pdfService->generateSettlementBillPdf($settlement);
@@ -570,6 +591,7 @@ class SettlementController extends Controller
     public function destroy(Settlement $settlement)
     {
         $this->authorizeSettlementAccess();
+        $this->guardSettlementCompany($settlement);
         $this->guardBranchOwnership($settlement);
         $vendorId = $settlement->vendor_id;
 
