@@ -10,6 +10,7 @@ use App\Models\Item;
 use App\Models\OutwardEntry;
 use App\Models\ProductionBatch;
 use App\Models\Settlement;
+use App\Models\StockTransfer;
 use App\Models\Vendor;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -21,6 +22,7 @@ class TrashController extends Controller
         'inward' => InwardEntry::class,
         'outward' => OutwardEntry::class,
         'production' => ProductionBatch::class,
+        'stock_transfer' => StockTransfer::class,
         'settlement' => Settlement::class,
         'debit_note' => DebitNote::class,
         'invoice' => Invoice::class,
@@ -83,6 +85,11 @@ class TrashController extends Controller
             $query->where('company_id', $companyId);
         } elseif (in_array($type, ['settlement', 'debit_note', 'invoice'], true)) {
             $query->whereHas('branch', fn ($q) => $q->where('company_id', $companyId));
+        } elseif ($type === 'stock_transfer') {
+            $query->where(function ($q) use ($companyId) {
+                $q->whereHas('fromBranch', fn ($b) => $b->where('company_id', $companyId))
+                  ->orWhereHas('toBranch', fn ($b) => $b->where('company_id', $companyId));
+            });
         }
 
         return $query;
@@ -96,6 +103,15 @@ class TrashController extends Controller
         $companyId = $this->activeCompanyId();
         if ($companyId === null) {
             return; // super admin with no company context
+        }
+
+        if ($type === 'stock_transfer') {
+            $fromComp = \App\Models\Branch::withTrashed()->where('id', $item->from_branch_id)->value('company_id');
+            $toComp = \App\Models\Branch::withTrashed()->where('id', $item->to_branch_id)->value('company_id');
+            if ((int) $fromComp !== $companyId && (int) $toComp !== $companyId) {
+                abort(404, 'Not found.');
+            }
+            return;
         }
 
         $attrs = $item->getAttributes();
@@ -144,6 +160,18 @@ class TrashController extends Controller
                     ->where('transaction_number', 'NOT LIKE', '%-VOID-%')
                     ->restore();
             });
+        } elseif ($type === 'production') {
+            DB::transaction(function () use ($item) {
+                $item->restore();
+                if ($item->status === 'CONFIRMED') {
+                    $item->update(['status' => 'DRAFT']);
+                    $userId = (int) (auth()->id() ?? 1);
+                    app(\App\Services\InventoryLedgerService::class)->confirmProduction($item, $userId);
+                }
+            });
+        } elseif ($type === 'stock_transfer') {
+            $userId = (int) (auth()->id() ?? 1);
+            app(\App\Services\InventoryLedgerService::class)->restoreTransfer($item, $userId);
         } else {
             $item->restore();
         }
@@ -189,6 +217,13 @@ class TrashController extends Controller
                     ->where('branch_id', $item->branch_id)
                     ->where('item_id', $item->item_id)
                     ->forceDelete();
+            } elseif ($type === 'stock_transfer') {
+                \App\Models\InventoryTransaction::where(function ($q) use ($item) {
+                    $q->where(function ($qq) use ($item) {
+                        $qq->where('reference_type', 'TRANSFER')
+                           ->where('reference_id', $item->id);
+                    })->orWhere('source_reference', $item->transfer_number);
+                })->forceDelete();
             }
 
             $item->forceDelete();
@@ -232,6 +267,13 @@ class TrashController extends Controller
                             ->where('branch_id', $item->branch_id)
                             ->where('item_id', $item->item_id)
                             ->forceDelete();
+                    } elseif ($t === 'stock_transfer') {
+                        \App\Models\InventoryTransaction::where(function ($q) use ($item) {
+                            $q->where(function ($qq) use ($item) {
+                                $qq->where('reference_type', 'TRANSFER')
+                                   ->where('reference_id', $item->id);
+                            })->orWhere('source_reference', $item->transfer_number);
+                        })->forceDelete();
                     }
                     $item->forceDelete();
                     $deletedCount++;
@@ -319,6 +361,15 @@ class TrashController extends Controller
                 $title = 'Lot ' . ($rec->lot_number ?? '#' . $rec->id);
                 $subtitle = "Item: " . ($rec->item?->name ?? '-') . " | Godown: " . ($rec->branch?->branch_name ?? '-') . " | Avail: " . number_format((float) ($rec->available_qty ?? 0), 3);
                 $amount = $rec->stock_value;
+                break;
+
+            case 'stock_transfer':
+                $rec->loadMissing(['fromBranch:id,branch_name', 'toBranch:id,branch_name', 'item:id,name', 'unit:id,code,symbol']);
+                $title = $rec->transfer_number ?? ('TRF #' . $rec->id);
+                $from = $rec->fromBranch?->branch_name ?? ('Godown #' . $rec->from_branch_id);
+                $to = $rec->toBranch?->branch_name ?? ('Godown #' . $rec->to_branch_id);
+                $unit = $rec->unit?->symbol ?: ($rec->unit?->code ?: 'KG');
+                $subtitle = "From: {$from} -> To: {$to} | Item: " . ($rec->item?->name ?? '-') . " (Qty: " . number_format((float)$rec->quantity, 3) . " {$unit})";
                 break;
         }
 

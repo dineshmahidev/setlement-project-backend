@@ -278,5 +278,27 @@ class PdfService
 
         return $pdf;
     }
+
+    public function generateStockTransferPdf(\App\Models\StockTransfer $transfer)
+    {
+        $transfer->load([
+            'fromBranch',
+            'toBranch',
+            'item.unit',
+            'unit',
+            'vehicle',
+            'creator',
+        ]);
+
+        $company = $this->resolveCompany($transfer->from_branch_id ?: $transfer->to_branch_id);
+        $company->state_code = $company->state_code ?: substr((string) $company->gstin, 0, 2);
+
+        $pdf = Pdf::loadView('pdf.stock_transfer', [
+            'transfer' => $transfer,
+            'company' => $company,
+        ])->setPaper('a4', 'portrait');
+
+        return $pdf;
+    }
 }
 

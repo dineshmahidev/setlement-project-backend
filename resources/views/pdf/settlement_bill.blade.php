@@ -475,14 +475,14 @@
                 <tr class="bg-head-cream">
                     <th style="width: 8%;" class="text-center">S.No</th>
                     <th style="width: 67%;">Particulars</th>
-                    <th style="width: 25%;" class="text-right">Amount (Rs.)</th>
+                    <th style="width: 25%;" class="text-right">Amount (₹)</th>
                 </tr>
             </thead>
             <tbody>
                 <tr>
                     <td class="text-center text-bold">1</td>
                     <td>{{ $debitNoteData['particulars_label'] ?? 'Rebate (Oil Content & Quality Adjustment Difference)' }}</td>
-                    <td class="text-right text-bold">Rs. {{ number_format((float)$debitNoteData['rebate_amount'], 2) }}</td>
+                    <td class="text-right text-bold">₹ {{ number_format((float)$debitNoteData['rebate_amount'], 2) }}</td>
                 </tr>
             </tbody>
         </table>
@@ -496,23 +496,23 @@
                         <tbody>
                             <tr>
                                 <td style="width: 55%; font-weight: bold;">Party Invoice</td>
-                                <td class="text-right text-bold">Rs. {{ number_format((float)$debitNoteData['invoice_value'], 2) }}</td>
+                                <td class="text-right text-bold">₹ {{ number_format((float)$debitNoteData['invoice_value'], 2) }}</td>
                             </tr>
                             <tr>
                                 <td>CGST</td>
-                                <td class="text-right">Rs. {{ number_format((float)$debitNoteData['inv_cgst'], 2) }}</td>
+                                <td class="text-right">₹ {{ number_format((float)$debitNoteData['inv_cgst'], 2) }}</td>
                             </tr>
                             <tr>
                                 <td>SGST</td>
-                                <td class="text-right">Rs. {{ number_format((float)$debitNoteData['inv_sgst'], 2) }}</td>
+                                <td class="text-right">₹ {{ number_format((float)$debitNoteData['inv_sgst'], 2) }}</td>
                             </tr>
                             <tr>
                                 <td>IGST</td>
-                                <td class="text-right">Rs. {{ number_format((float)$debitNoteData['inv_igst'], 2) }}</td>
+                                <td class="text-right">₹ {{ number_format((float)$debitNoteData['inv_igst'], 2) }}</td>
                             </tr>
                             <tr class="bg-light-cream">
                                 <td class="text-bold text-navy">Total Party Invoice</td>
-                                <td class="text-right text-bold text-navy">Rs. {{ number_format((float)$debitNoteData['inv_total'], 2) }}</td>
+                                <td class="text-right text-bold text-navy">₹ {{ number_format((float)$debitNoteData['inv_total'], 2) }}</td>
                             </tr>
                         </tbody>
                     </table>
@@ -526,23 +526,23 @@
                         <tbody>
                             <tr class="bg-light-cream">
                                 <td style="width: 55%;" class="text-bold">{{ ($debitNoteData['transaction_type'] ?? 'debit') === 'credit' ? 'Total (Credit)' : 'Total (Debit)' }}</td>
-                                <td class="text-right text-bold">Rs. {{ number_format((float)$debitNoteData['rebate_amount'], 2) }}</td>
+                                <td class="text-right text-bold">₹ {{ number_format((float)$debitNoteData['rebate_amount'], 2) }}</td>
                             </tr>
                             <tr>
                                 <td>CGST</td>
-                                <td class="text-right">Rs. {{ number_format((float)$debitNoteData['rebate_cgst'], 2) }}</td>
+                                <td class="text-right">₹ {{ number_format((float)$debitNoteData['rebate_cgst'], 2) }}</td>
                             </tr>
                             <tr>
                                 <td>SGST</td>
-                                <td class="text-right">Rs. {{ number_format((float)$debitNoteData['rebate_sgst'], 2) }}</td>
+                                <td class="text-right">₹ {{ number_format((float)$debitNoteData['rebate_sgst'], 2) }}</td>
                             </tr>
                             <tr>
                                 <td>IGST</td>
-                                <td class="text-right">Rs. {{ number_format((float)$debitNoteData['rebate_igst'], 2) }}</td>
+                                <td class="text-right">₹ {{ number_format((float)$debitNoteData['rebate_igst'], 2) }}</td>
                             </tr>
                             <tr class="net-payable-row">
                                 <td class="text-bold text-navy">Total</td>
-                                <td class="text-right text-bold text-navy">Rs. {{ number_format((float)$debitNoteData['rebate_total'], 2) }}</td>
+                                <td class="text-right text-bold text-navy">₹ {{ number_format((float)$debitNoteData['rebate_total'], 2) }}</td>
                             </tr>
                         </tbody>
                     </table>

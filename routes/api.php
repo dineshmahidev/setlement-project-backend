@@ -119,6 +119,10 @@ Route::middleware(['auth:sanctum', 'company.scope'])->group(function () {
     Route::post('/inventory/stock-out', [InventoryController::class, 'stockOut']);
     Route::get('/inventory/transfers', [InventoryController::class, 'transfers']);
     Route::get('/inventory/transfers/pdf', [InventoryController::class, 'transfersPdf']);
+    Route::get('/inventory/transfers/{transfer}', [InventoryController::class, 'showTransfer']);
+    Route::put('/inventory/transfers/{transfer}', [InventoryController::class, 'updateTransfer'])->middleware('permission:inventory.transfer');
+    Route::delete('/inventory/transfers/{transfer}', [InventoryController::class, 'destroyTransfer'])->middleware('permission:inventory.transfer');
+    Route::get('/inventory/transfers/{transfer}/pdf', [InventoryController::class, 'singleTransferPdf']);
     Route::post('/inventory/transfer', [InventoryController::class, 'transfer']);
     Route::post('/inventory/transfer-lot', [InventoryController::class, 'transferLot'])->middleware('permission:inventory.transfer');
     Route::post('/inventory/adjustment', [InventoryController::class, 'adjustment']);
@@ -160,7 +164,7 @@ Route::middleware(['auth:sanctum', 'company.scope'])->group(function () {
     Route::get('/production/{production}/pdf', [ProductionController::class, 'pdf']);
     Route::post('/production/{production}/confirm', [ProductionController::class, 'confirm'])->middleware('permission:inventory.stock_in');
     Route::middleware('permission:inventory.view')->group(function () {
-        Route::apiResource('production', ProductionController::class)->only(['index', 'store', 'show', 'destroy']);
+        Route::apiResource('production', ProductionController::class);
     });
 
     // Reports

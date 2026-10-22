@@ -23,39 +23,17 @@ class DashboardController extends Controller
 
         $user = $request->user();
         $companyId = $this->activeCompanyId();
-        $companyBranchIds = $companyId ? Branch::where('company_id', $companyId)->pluck('id')->all() : null;
-        $allowedBranchIds = $user ? $user->allowedBranchIds($companyId) : null;
         $explicitBranch = $request->get('branch_id');
 
-        // Resolve the visible branch set. Fail closed: an empty array means
-        // "nothing visible in this company" (filters to zero rows). Only null
-        // means "unrestricted" (super admin with no company context).
-        if ($explicitBranch) {
-            $branchId = is_array($allowedBranchIds)
-                ? array_values(array_intersect(array_map('intval', (array) $explicitBranch), array_map('intval', $allowedBranchIds)))
-                : $explicitBranch;
-        } elseif ($companyBranchIds !== null) {
-            // Company context: restrict to this company's branches (intersected with the user's allowed set).
-            $branchId = is_array($allowedBranchIds)
-                ? array_values(array_intersect($companyBranchIds, array_map('intval', $allowedBranchIds)))
-                : $companyBranchIds;
-        } else {
-            // No company context (super admin global view): fall back to the user's allowed branches.
-            $branchId = $allowedBranchIds;
-        }
-
-        $applyBranch = function ($query, $column = 'branch_id') use ($branchId) {
-            if (is_array($branchId)) {
-                // Empty array => whereIn([]) => 0 = 1 => no rows (fail closed).
-                return $query->whereIn($column, $branchId);
+        // Settlement dashboard is company-level: branch filter only applies if explicitly requested
+        $applyBranch = function ($query, $column = 'branch_id') use ($explicitBranch) {
+            if ($explicitBranch) {
+                return $query->where($column, $explicitBranch);
             }
-            if ($branchId !== null && $branchId !== '') {
-                return $query->where($column, $branchId);
-            }
-            return $query; // unrestricted only when no company context
+            return $query;
         };
 
-        // Defence in depth: settlements/debit notes always follow their branch's company.
+        // Settlements and debit notes follow the active company
         $applyCompanyBranch = function ($query) use ($companyId) {
             if ($companyId !== null) {
                 $query->whereHas('branch', fn ($q) => $q->where('company_id', $companyId));
@@ -122,9 +100,16 @@ class DashboardController extends Controller
 
         // Calculate Total Outstanding / Balance across vendors
         $latestBalancesQuery = DB::table('vendor_ledger as vl1')
+            ->join('vendors as v', 'vl1.vendor_id', '=', 'v.id')
+            ->where('v.status', 'active')
             ->select('vl1.vendor_id', 'vl1.balance')
             ->whereRaw('vl1.id = (SELECT MAX(vl2.id) FROM vendor_ledger vl2 WHERE vl2.vendor_id = vl1.vendor_id)');
-        $applyBranch($latestBalancesQuery, 'vl1.branch_id');
+        if ($companyId !== null) {
+            $latestBalancesQuery->where('v.company_id', $companyId);
+        }
+        if ($explicitBranch) {
+            $latestBalancesQuery->where('vl1.branch_id', $explicitBranch);
+        }
         $latestBalances = $latestBalancesQuery->get();
 
         $totalPayable = 0;
@@ -154,9 +139,13 @@ class DashboardController extends Controller
         // Vendor-wise Settlement
         $vendorWiseQuery = DB::table('settlements')
             ->join('vendors', 'settlements.vendor_id', '=', 'vendors.id')
+            ->join('branches', 'settlements.branch_id', '=', 'branches.id')
             ->where('vendors.status', 'active')
             ->where('settlements.status', '!=', 'cancelled')
             ->whereBetween('settlements.settlement_date', [$startDate, $endDate]);
+        if ($companyId !== null) {
+            $vendorWiseQuery->where('branches.company_id', $companyId);
+        }
         $applyBranch($vendorWiseQuery, 'settlements.branch_id');
         $vendorWise = $vendorWiseQuery->select('vendors.vendor_name', DB::raw('SUM(settlements.net_payable) as total_value'), DB::raw('COUNT(settlements.id) as count'))
             ->groupBy('vendors.id', 'vendors.vendor_name')
@@ -167,9 +156,13 @@ class DashboardController extends Controller
         // Monthly Settlement Trend
         $monthlyTrendQuery = DB::table('settlements')
             ->join('vendors', 'settlements.vendor_id', '=', 'vendors.id')
+            ->join('branches', 'settlements.branch_id', '=', 'branches.id')
             ->where('vendors.status', 'active')
             ->where('settlements.status', '!=', 'cancelled')
             ->where('settlements.settlement_date', '>=', Carbon::now()->subMonths(5)->startOfMonth()->toDateString());
+        if ($companyId !== null) {
+            $monthlyTrendQuery->where('branches.company_id', $companyId);
+        }
         $applyBranch($monthlyTrendQuery, 'settlements.branch_id');
         $monthlyTrend = $monthlyTrendQuery->select(
                 DB::raw("DATE_FORMAT(settlements.settlement_date, '%Y-%m') as month"),
@@ -185,10 +178,14 @@ class DashboardController extends Controller
         // Product-wise Settlement
         $productWiseQuery = DB::table('settlements')
             ->join('vendors', 'settlements.vendor_id', '=', 'vendors.id')
+            ->join('branches', 'settlements.branch_id', '=', 'branches.id')
             ->where('vendors.status', 'active')
             ->leftJoin('products', 'settlements.product_id', '=', 'products.id')
             ->where('settlements.status', '!=', 'cancelled')
             ->whereBetween('settlements.settlement_date', [$startDate, $endDate]);
+        if ($companyId !== null) {
+            $productWiseQuery->where('branches.company_id', $companyId);
+        }
         $applyBranch($productWiseQuery, 'settlements.branch_id');
         $productWise = $productWiseQuery->select(
                 DB::raw('COALESCE(products.product_name, "Rice Bran Grade II") as product_name'),

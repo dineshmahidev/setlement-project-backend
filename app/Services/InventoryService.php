@@ -431,11 +431,13 @@ class InventoryService
 
             $in = (clone $inQ)->where('type', 'STOCK_IN')->sum('quantity')
                 + (clone $inQ)->where('type', 'TRANSFER_IN')->sum('quantity')
-                + (clone $inQ)->where('type', 'ADJUSTMENT_IN')->sum('quantity');
+                + (clone $inQ)->where('type', 'ADJUSTMENT_IN')->sum('quantity')
+                + (clone $inQ)->where('type', 'PRODUCTION_OUT')->sum('quantity');
 
             $out = (clone $outQ)->where('type', 'STOCK_OUT')->sum('quantity')
                 + (clone $outQ)->where('type', 'TRANSFER_OUT')->sum('quantity')
-                + (clone $outQ)->where('type', 'ADJUSTMENT_OUT')->sum('quantity');
+                + (clone $outQ)->where('type', 'ADJUSTMENT_OUT')->sum('quantity')
+                + (clone $outQ)->where('type', 'PRODUCTION_IN')->sum('quantity');
 
             // Cumulative available stock as of dateTo (or all time if no dateTo)
             $allTx = InventoryTransaction::where('item_id', $item->id)
@@ -449,11 +451,13 @@ class InventoryService
 
             $cumIn = (clone $allTx)->where('type', 'STOCK_IN')->sum('quantity')
                 + (clone $allTx)->where('type', 'TRANSFER_IN')->sum('quantity')
-                + (clone $allTx)->where('type', 'ADJUSTMENT_IN')->sum('quantity');
+                + (clone $allTx)->where('type', 'ADJUSTMENT_IN')->sum('quantity')
+                + (clone $allTx)->where('type', 'PRODUCTION_OUT')->sum('quantity');
 
             $cumOut = (clone $allTx)->where('type', 'STOCK_OUT')->sum('quantity')
                 + (clone $allTx)->where('type', 'TRANSFER_OUT')->sum('quantity')
-                + (clone $allTx)->where('type', 'ADJUSTMENT_OUT')->sum('quantity');
+                + (clone $allTx)->where('type', 'ADJUSTMENT_OUT')->sum('quantity')
+                + (clone $allTx)->where('type', 'PRODUCTION_IN')->sum('quantity');
 
             $available = (float) $cumIn - (float) $cumOut;
             $min = (float) $item->min_stock_level;

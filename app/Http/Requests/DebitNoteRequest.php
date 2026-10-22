@@ -17,7 +17,7 @@ class DebitNoteRequest extends FormRequest
 
         return [
             'debit_note_number' => ['nullable', 'string', 'max:50', 'unique:debit_notes,debit_note_number,' . $id],
-            'branch_id' => ['required', 'exists:branches,id'],
+            'branch_id' => ['nullable', 'exists:branches,id'],
             'vendor_id' => ['required', 'exists:vendors,id'],
             'settlement_id' => ['nullable', 'exists:settlements,id'],
             'invoice_id' => ['nullable', 'exists:invoices,id'],

@@ -85,7 +85,12 @@ class SettlementController extends Controller
                 $q->where('company_id', $companyId);
             });
         } else {
-            $this->scopeBranches($query);
+            $allowedCompanyIds = request('allowed_company_ids');
+            if (is_array($allowedCompanyIds)) {
+                $query->whereHas('branch', function ($q) use ($allowedCompanyIds) {
+                    $q->whereIn('company_id', $allowedCompanyIds);
+                });
+            }
         }
 
         if ($request->filled('branch_id')) {
@@ -134,7 +139,38 @@ class SettlementController extends Controller
         $this->authorizeSettlementAccess($request);
         $validated = $request->validated();
 
-        $this->guardBranchAccess($validated['branch_id'] ?? null);
+        $companyId = $this->activeCompanyId();
+
+        // Settlements are company-level: If branch_id is provided, verify it belongs to active company
+        if (! empty($validated['branch_id']) && $companyId) {
+            $belongsToCompany = \App\Models\Branch::where('id', $validated['branch_id'])
+                ->where('company_id', $companyId)
+                ->exists();
+            if (! $belongsToCompany) {
+                $validated['branch_id'] = null;
+            }
+        }
+
+        // Auto-resolve branch for active company if not specified
+        if (empty($validated['branch_id'])) {
+            $branch = null;
+            if ($companyId) {
+                $branch = \App\Models\Branch::where('company_id', $companyId)->first();
+            }
+            if (! $branch) {
+                $branch = \App\Models\Branch::first();
+            }
+            if (! $branch && $companyId) {
+                $company = \App\Models\Company::find($companyId);
+                $branch = \App\Models\Branch::create([
+                    'company_id' => $companyId,
+                    'branch_code' => 'HQ',
+                    'branch_name' => ($company?->company_name ?? 'Company') . ' - Head Office',
+                    'status' => 'active',
+                ]);
+            }
+            $validated['branch_id'] = $branch?->id;
+        }
 
         $settlement = DB::transaction(function () use ($validated, $request) {
             // 1. Recalculate everything on backend via Service class
@@ -317,7 +353,6 @@ class SettlementController extends Controller
     {
         $this->authorizeSettlementAccess();
         $this->guardSettlementCompany($settlement);
-        $this->guardBranchOwnership($settlement);
 
         $settlement->load(['branch.company', 'vendor', 'product', 'invoice', 'debitNotes.items', 'qualityTests', 'charges', 'creator']);
 
@@ -356,7 +391,6 @@ class SettlementController extends Controller
     {
         $this->authorizeSettlementAccess($request);
         $this->guardSettlementCompany($settlement);
-        $this->guardBranchOwnership($settlement);
 
         if ($settlement->status === 'cancelled') {
             return response()->json([
@@ -366,6 +400,18 @@ class SettlementController extends Controller
         }
 
         $validated = $request->validated();
+        if (empty($validated['branch_id'])) {
+            $validated['branch_id'] = $settlement->branch_id;
+        }
+        $companyId = $this->activeCompanyId();
+        if (! empty($validated['branch_id']) && $companyId) {
+            $belongsToCompany = \App\Models\Branch::where('id', $validated['branch_id'])
+                ->where('company_id', $companyId)
+                ->exists();
+            if (! $belongsToCompany) {
+                $validated['branch_id'] = \App\Models\Branch::where('company_id', $companyId)->value('id') ?? $settlement->branch_id;
+            }
+        }
         $old = $settlement->toArray();
 
         $settlement = DB::transaction(function () use ($settlement, $validated, $old) {
@@ -520,7 +566,6 @@ class SettlementController extends Controller
     {
         $this->authorizeSettlementAccess($request);
         $this->guardSettlementCompany($settlement);
-        $this->guardBranchOwnership($settlement);
 
         $request->validate([
             'cancellation_reason' => 'required|string|min:5',
@@ -580,7 +625,6 @@ class SettlementController extends Controller
     {
         $this->authorizeSettlementAccess();
         $this->guardSettlementCompany($settlement);
-        $this->guardBranchOwnership($settlement);
 
         $pdf = $this->pdfService->generateSettlementBillPdf($settlement);
         $fileName = str_replace(['/', '\\'], '-', $settlement->settlement_number) . '.pdf';
@@ -592,7 +636,6 @@ class SettlementController extends Controller
     {
         $this->authorizeSettlementAccess();
         $this->guardSettlementCompany($settlement);
-        $this->guardBranchOwnership($settlement);
         $vendorId = $settlement->vendor_id;
 
         DB::transaction(function () use ($settlement, $vendorId) {

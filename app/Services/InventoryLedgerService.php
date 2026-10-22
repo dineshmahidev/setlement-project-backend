@@ -1124,14 +1124,15 @@ class InventoryLedgerService
             $unitCost = (float) ($lot->unit_cost ?? ($lot->received_qty > 0 ? $lot->stock_value / $lot->received_qty : 0));
             $value = round($unitCost * $qty, 2);
 
+            $outTxNumber = sprintf('TRF-OUT-%s-%s', $lot->lot_number, $now->format('YmdHis'));
             $this->postMovement([
-                'transaction_number' => sprintf('TRF-OUT-%s-%s', $lot->lot_number, $now->format('YmdHis')),
+                'transaction_number' => $outTxNumber,
                 'date' => $payload['date'] ?? $now->toDateString(),
                 'company_id' => $companyId, 'branch_id' => $sourceBranchId, 'item_id' => $lot->item_id,
                 'type' => 'TRANSFER_OUT', 'quantity' => $qty, 'signed_quantity' => -$qty,
                 'rate' => $unitCost, 'amount' => $value, 'oil_pct' => $lot->oil_pct, 'grade_id' => $lot->grade_id,
                 'lot_number' => $lot->lot_number, 'unit_id' => $lot->unit_id,
-                'reference_type' => 'transfer', 'source_reference' => $payload['reference'] ?? null,
+                'reference_type' => 'TRANSFER', 'source_reference' => $payload['reference'] ?? null,
                 'destination' => 'Godown #'.$destBranchId, 'status' => 'POSTED', 'created_by' => $userId,
             ]);
 
@@ -1152,23 +1153,487 @@ class InventoryLedgerService
                 ]);
             }
 
+            $inTxNumber = sprintf('TRF-IN-%s-%s', $lot->lot_number, $now->format('YmdHis'));
             $this->postMovement([
-                'transaction_number' => sprintf('TRF-IN-%s-%s', $lot->lot_number, $now->format('YmdHis')),
+                'transaction_number' => $inTxNumber,
                 'date' => $payload['date'] ?? $now->toDateString(),
                 'company_id' => $companyId, 'branch_id' => $destBranchId, 'item_id' => $lot->item_id,
                 'type' => 'TRANSFER_IN', 'quantity' => $qty, 'signed_quantity' => $qty,
                 'rate' => $unitCost, 'amount' => $value, 'oil_pct' => $lot->oil_pct, 'grade_id' => $lot->grade_id,
                 'lot_number' => $lot->lot_number, 'unit_id' => $lot->unit_id,
-                'reference_type' => 'transfer', 'source_reference' => $payload['reference'] ?? null,
+                'reference_type' => 'TRANSFER', 'source_reference' => $payload['reference'] ?? null,
                 'customer' => 'From Godown #'.$sourceBranchId, 'status' => 'POSTED', 'created_by' => $userId,
             ]);
 
+            // History record so lot-based transfers show in the Stock Transfers table + PDF
+            $vehicleId = null;
+            $vNum = trim($payload['vehicle_number'] ?? $payload['vehicle'] ?? '');
+            if ($vNum !== '') {
+                $veh = \App\Models\Vehicle::where('vehicle_number', $vNum)->first();
+                if (! $veh) {
+                    $veh = \App\Models\Vehicle::create([
+                        'vehicle_number' => $vNum,
+                        'status' => 'ACTIVE',
+                        'company_id' => $companyId,
+                    ]);
+                }
+                $vehicleId = $veh->id;
+            }
+            $transferNumber = $this->nextNumber('TRF', 'stock_transfers', 'transfer_number');
+            $transfer = \App\Models\StockTransfer::create([
+                'transfer_number' => $transferNumber,
+                'date' => $payload['date'] ?? $now->toDateString(),
+                'from_branch_id' => $sourceBranchId,
+                'to_branch_id' => $destBranchId,
+                'item_id' => $lot->item_id,
+                'quantity' => $qty,
+                'unit_id' => $lot->unit_id,
+                'lot_number' => $lot->lot_number,
+                'vehicle_id' => $vehicleId,
+                'status' => 'POSTED',
+                'remarks' => $payload['reference'] ?? null,
+                'created_by' => $userId,
+            ]);
+
+            InventoryTransaction::whereIn('transaction_number', [$outTxNumber, $inTxNumber])
+                ->update(['reference_type' => 'TRANSFER', 'reference_id' => $transfer->id, 'source_reference' => $transfer->transfer_number]);
+
             return [
+                'transfer' => $transfer,
                 'source_lot' => $lot->fresh(),
                 'dest_lot' => $destLot->fresh(),
                 'quantity' => $qty,
                 'value' => $value,
             ];
+        });
+    }
+
+    public function updateTransfer(\App\Models\StockTransfer $transfer, array $payload, int $userId): \App\Models\StockTransfer
+    {
+        return DB::transaction(function () use ($transfer, $payload, $userId) {
+            $transfer = \App\Models\StockTransfer::whereKey($transfer->id)->lockForUpdate()->first();
+            if ($transfer->trashed()) {
+                throw new \RuntimeException('Cannot edit a deleted stock transfer.');
+            }
+
+            $oldFromBranch = (int) $transfer->from_branch_id;
+            $oldToBranch = (int) $transfer->to_branch_id;
+            $oldLotNumber = $transfer->lot_number;
+            $oldItemId = (int) $transfer->item_id;
+            $oldQty = (float) $transfer->quantity;
+
+            $newFromBranch = (int) ($payload['source_branch_id'] ?? $payload['from_branch_id'] ?? $oldFromBranch);
+            $newToBranch = (int) ($payload['dest_branch_id'] ?? $payload['to_branch_id'] ?? $oldToBranch);
+            $newQty = round((float) $payload['quantity'], 3);
+            $newLotId = isset($payload['lot_id']) ? (int) $payload['lot_id'] : null;
+
+            if ($newFromBranch === $newToBranch) {
+                throw new \RuntimeException('Source and destination godowns must differ.');
+            }
+            if ($newQty <= 0) {
+                throw new \RuntimeException('Transfer quantity must be greater than zero.');
+            }
+
+            // 1. Check destination lot from previous transfer
+            $destLot = Lot::where('branch_id', $oldToBranch)
+                ->where('item_id', $oldItemId)
+                ->where('lot_number', $oldLotNumber)
+                ->lockForUpdate()
+                ->first();
+
+            if ($destLot) {
+                $diff = $oldQty - $newQty;
+                if ($newFromBranch !== $oldFromBranch || $newToBranch !== $oldToBranch || ($newLotId && !empty($payload['lot_number']) && $payload['lot_number'] !== $oldLotNumber)) {
+                    if ((float) $destLot->available_qty < $oldQty) {
+                        throw new \RuntimeException(sprintf(
+                            'Stock in destination lot %s has already been partially used/dispatched (available: %s, transfer: %s). Cannot change transfer godown or lot.',
+                            $destLot->lot_number, $destLot->available_qty, $oldQty
+                        ));
+                    }
+                } elseif ($diff > 0 && (float) $destLot->available_qty < $diff) {
+                    throw new \RuntimeException(sprintf(
+                        'Cannot reduce transfer by %s: destination godown only has %s available in lot %s.',
+                        $diff, $destLot->available_qty, $destLot->lot_number
+                    ));
+                }
+            }
+
+            // 2. Revert previous transfer on destination lot
+            if ($destLot) {
+                $destLotAvail = max(0, (float) $destLot->available_qty - $oldQty);
+                $destLotRec = max(0, (float) $destLot->received_qty - $oldQty);
+                $unitCost = (float) $destLot->unit_cost;
+                $destLot->update([
+                    'available_qty' => $destLotAvail,
+                    'received_qty' => $destLotRec,
+                    'stock_value' => round(max(0, $destLotAvail * $unitCost), 2),
+                    'status' => ($destLotAvail <= 0 && (float) $destLot->issued_qty <= 0) ? 'CLOSED' : $destLot->status,
+                ]);
+            }
+
+            // 3. Revert previous transfer on source lot (restore stock)
+            $oldSrcLot = Lot::where('branch_id', $oldFromBranch)
+                ->where('item_id', $oldItemId)
+                ->where('lot_number', $oldLotNumber)
+                ->lockForUpdate()
+                ->first();
+
+            if ($oldSrcLot) {
+                $oldSrcAvail = (float) $oldSrcLot->available_qty + $oldQty;
+                $oldSrcIssued = max(0, (float) $oldSrcLot->issued_qty - $oldQty);
+                $oldSrcCost = (float) $oldSrcLot->unit_cost;
+                $oldSrcLot->update([
+                    'available_qty' => $oldSrcAvail,
+                    'issued_qty' => $oldSrcIssued,
+                    'stock_value' => round(max(0, $oldSrcAvail * $oldSrcCost), 2),
+                    'status' => 'OPEN',
+                ]);
+            }
+
+            // 4. Delete old ledger transactions
+            InventoryTransaction::where(function ($q) use ($transfer) {
+                $q->where(function ($qq) use ($transfer) {
+                    $qq->where('reference_type', 'TRANSFER')
+                       ->where('reference_id', $transfer->id);
+                })->orWhere(function ($qq) use ($transfer) {
+                    $qq->where('source_reference', $transfer->transfer_number);
+                });
+            })->delete();
+
+            // 5. Resolve new source lot and apply new transfer
+            $targetSrcLot = null;
+            if ($newLotId) {
+                $targetSrcLot = Lot::where('id', $newLotId)->lockForUpdate()->first();
+            } else {
+                $targetLotNo = $payload['lot_number'] ?? $oldLotNumber;
+                $targetItemId = !empty($payload['item_id']) ? (int) $payload['item_id'] : $oldItemId;
+                $targetSrcLot = Lot::where('branch_id', $newFromBranch)
+                    ->where('item_id', $targetItemId)
+                    ->where('lot_number', $targetLotNo)
+                    ->lockForUpdate()
+                    ->first();
+            }
+
+            if (! $targetSrcLot) {
+                throw new \RuntimeException('Selected source lot not found.');
+            }
+            if ((float) $targetSrcLot->available_qty < $newQty) {
+                throw new \RuntimeException(sprintf(
+                    'Insufficient stock in source lot %s: requested %s, available %s.',
+                    $targetSrcLot->lot_number, $newQty, $targetSrcLot->available_qty
+                ));
+            }
+
+            $now = now();
+            $companyId = (int) $targetSrcLot->company_id;
+            $unitCost = (float) ($targetSrcLot->unit_cost ?? ($targetSrcLot->received_qty > 0 ? $targetSrcLot->stock_value / $targetSrcLot->received_qty : 0));
+            $value = round($unitCost * $newQty, 2);
+
+            // Deduct from target source lot
+            $targetSrcLot->decrement('available_qty', $newQty);
+            $targetSrcLot->increment('issued_qty', $newQty);
+            if ((float) $targetSrcLot->available_qty <= 0) {
+                $targetSrcLot->update(['status' => 'CLOSED', 'available_qty' => 0]);
+            }
+
+            // Post TRANSFER_OUT
+            $this->postMovement([
+                'transaction_number' => sprintf('TRF-OUT-%s-%s', $targetSrcLot->lot_number, $now->format('YmdHis')),
+                'date' => $payload['date'] ?? $now->toDateString(),
+                'company_id' => $companyId,
+                'branch_id' => $newFromBranch,
+                'item_id' => $targetSrcLot->item_id,
+                'type' => 'TRANSFER_OUT',
+                'quantity' => $newQty,
+                'signed_quantity' => -$newQty,
+                'rate' => $unitCost,
+                'amount' => $value,
+                'oil_pct' => $targetSrcLot->oil_pct,
+                'grade_id' => $targetSrcLot->grade_id,
+                'lot_number' => $targetSrcLot->lot_number,
+                'unit_id' => $targetSrcLot->unit_id,
+                'reference_type' => 'TRANSFER',
+                'reference_id' => $transfer->id,
+                'source_reference' => $transfer->transfer_number,
+                'destination' => 'Godown #'.$newToBranch,
+                'remarks' => $payload['reference'] ?? $payload['remarks'] ?? null,
+                'status' => 'POSTED',
+                'created_by' => $userId,
+            ]);
+
+            // Add into destination lot
+            $newDestLot = Lot::where('company_id', $companyId)
+                ->where('branch_id', $newToBranch)
+                ->where('item_id', $targetSrcLot->item_id)
+                ->where('lot_number', $targetSrcLot->lot_number)
+                ->lockForUpdate()
+                ->first();
+
+            if ($newDestLot && $newDestLot->status === 'OPEN') {
+                $newDestLot->increment('received_qty', $newQty);
+                $newDestLot->increment('available_qty', $newQty);
+                $newDestLot->increment('stock_value', $value);
+            } else {
+                $newDestLot = Lot::create([
+                    'company_id' => $companyId,
+                    'branch_id' => $newToBranch,
+                    'item_id' => $targetSrcLot->item_id,
+                    'grade_id' => $targetSrcLot->grade_id,
+                    'lot_number' => $targetSrcLot->lot_number,
+                    'oil_pct' => $targetSrcLot->oil_pct,
+                    'opening_qty' => 0,
+                    'received_qty' => $newQty,
+                    'issued_qty' => 0,
+                    'available_qty' => $newQty,
+                    'reserved_qty' => 0,
+                    'unit_id' => $targetSrcLot->unit_id,
+                    'unit_cost' => $unitCost,
+                    'stock_value' => $value,
+                    'source' => 'transfer',
+                    'status' => 'OPEN',
+                ]);
+            }
+
+            // Post TRANSFER_IN
+            $this->postMovement([
+                'transaction_number' => sprintf('TRF-IN-%s-%s', $targetSrcLot->lot_number, $now->format('YmdHis')),
+                'date' => $payload['date'] ?? $now->toDateString(),
+                'company_id' => $companyId,
+                'branch_id' => $newToBranch,
+                'item_id' => $targetSrcLot->item_id,
+                'type' => 'TRANSFER_IN',
+                'quantity' => $newQty,
+                'signed_quantity' => $newQty,
+                'rate' => $unitCost,
+                'amount' => $value,
+                'oil_pct' => $targetSrcLot->oil_pct,
+                'grade_id' => $targetSrcLot->grade_id,
+                'lot_number' => $targetSrcLot->lot_number,
+                'unit_id' => $targetSrcLot->unit_id,
+                'reference_type' => 'TRANSFER',
+                'reference_id' => $transfer->id,
+                'source_reference' => $transfer->transfer_number,
+                'customer' => 'From Godown #'.$newFromBranch,
+                'remarks' => $payload['reference'] ?? $payload['remarks'] ?? null,
+                'status' => 'POSTED',
+                'created_by' => $userId,
+            ]);
+
+            // Handle vehicle
+            $vehicleId = $transfer->vehicle_id;
+            $vNum = trim($payload['vehicle_number'] ?? $payload['vehicle'] ?? '');
+            if ($vNum !== '') {
+                $veh = \App\Models\Vehicle::where('vehicle_number', $vNum)->first();
+                if (! $veh) {
+                    $veh = \App\Models\Vehicle::create([
+                        'vehicle_number' => $vNum,
+                        'status' => 'ACTIVE',
+                        'company_id' => $companyId,
+                    ]);
+                }
+                $vehicleId = $veh->id;
+            }
+
+            // 6. Update StockTransfer header
+            $transfer->update([
+                'date' => $payload['date'] ?? $transfer->date,
+                'from_branch_id' => $newFromBranch,
+                'to_branch_id' => $newToBranch,
+                'item_id' => $targetSrcLot->item_id,
+                'quantity' => $newQty,
+                'unit_id' => $targetSrcLot->unit_id,
+                'lot_number' => $targetSrcLot->lot_number,
+                'vehicle_id' => $vehicleId,
+                'remarks' => $payload['reference'] ?? $payload['remarks'] ?? $transfer->remarks,
+            ]);
+
+            return $transfer->fresh(['fromBranch', 'toBranch', 'item.unit', 'unit', 'vehicle', 'creator']);
+        });
+    }
+
+    public function trashTransfer(\App\Models\StockTransfer $transfer): \App\Models\StockTransfer
+    {
+        return DB::transaction(function () use ($transfer) {
+            $transfer = \App\Models\StockTransfer::whereKey($transfer->id)->lockForUpdate()->first();
+            if ($transfer->trashed()) return $transfer;
+
+            $destBranchId = (int) $transfer->to_branch_id;
+            $srcBranchId = (int) $transfer->from_branch_id;
+            $lotNumber = $transfer->lot_number;
+            $itemId = (int) $transfer->item_id;
+            $qty = (float) $transfer->quantity;
+
+            // 1. Check destination lot
+            $destLot = Lot::where('branch_id', $destBranchId)
+                ->where('item_id', $itemId)
+                ->where('lot_number', $lotNumber)
+                ->lockForUpdate()
+                ->first();
+
+            if ($destLot && (float) $destLot->issued_qty > 0 && (float) $destLot->available_qty < $qty) {
+                throw new \RuntimeException(sprintf(
+                    'Cannot delete transfer: destination lot %s has already been partially dispatched/used (available: %s, needed: %s).',
+                    $lotNumber, $destLot->available_qty, $qty
+                ));
+            }
+
+            // Revert destination lot stock
+            if ($destLot) {
+                $destLotAvail = max(0, (float) $destLot->available_qty - $qty);
+                $destLotRec = max(0, (float) $destLot->received_qty - $qty);
+                $cost = (float) $destLot->unit_cost;
+                $destLot->update([
+                    'available_qty' => $destLotAvail,
+                    'received_qty' => $destLotRec,
+                    'stock_value' => round(max(0, $destLotAvail * $cost), 2),
+                    'status' => ($destLotAvail <= 0 && (float) $destLot->issued_qty <= 0) ? 'CLOSED' : $destLot->status,
+                ]);
+            }
+
+            // Restore source lot stock
+            $srcLot = Lot::where('branch_id', $srcBranchId)
+                ->where('item_id', $itemId)
+                ->where('lot_number', $lotNumber)
+                ->lockForUpdate()
+                ->first();
+
+            if ($srcLot) {
+                $srcLotAvail = (float) $srcLot->available_qty + $qty;
+                $srcLotIssued = max(0, (float) $srcLot->issued_qty - $qty);
+                $srcCost = (float) $srcLot->unit_cost;
+                $srcLot->update([
+                    'available_qty' => $srcLotAvail,
+                    'issued_qty' => $srcLotIssued,
+                    'stock_value' => round(max(0, $srcLotAvail * $srcCost), 2),
+                    'status' => 'OPEN',
+                ]);
+            }
+
+            // Delete or soft-delete ledger transactions
+            InventoryTransaction::where(function ($q) use ($transfer) {
+                $q->where(function ($qq) use ($transfer) {
+                    $qq->where('reference_type', 'TRANSFER')
+                       ->where('reference_id', $transfer->id);
+                })->orWhere(function ($qq) use ($transfer) {
+                    $qq->where('source_reference', $transfer->transfer_number);
+                });
+            })->delete();
+
+            $transfer->delete();
+            return $transfer;
+        });
+    }
+
+    public function restoreTransfer(\App\Models\StockTransfer $transfer, int $userId): \App\Models\StockTransfer
+    {
+        return DB::transaction(function () use ($transfer, $userId) {
+            $destBranchId = (int) $transfer->to_branch_id;
+            $srcBranchId = (int) $transfer->from_branch_id;
+            $lotNumber = $transfer->lot_number;
+            $itemId = (int) $transfer->item_id;
+            $qty = (float) $transfer->quantity;
+
+            // Deduct from source lot
+            $srcLot = Lot::where('branch_id', $srcBranchId)
+                ->where('item_id', $itemId)
+                ->where('lot_number', $lotNumber)
+                ->lockForUpdate()
+                ->first();
+
+            if (!$srcLot || (float) $srcLot->available_qty < $qty) {
+                throw new \RuntimeException(sprintf('Insufficient stock to restore transfer: source lot %s only has %s available.', $lotNumber, $srcLot ? $srcLot->available_qty : 0));
+            }
+
+            $srcLot->decrement('available_qty', $qty);
+            $srcLot->increment('issued_qty', $qty);
+            if ((float) $srcLot->available_qty <= 0) {
+                $srcLot->update(['status' => 'CLOSED', 'available_qty' => 0]);
+            }
+
+            $unitCost = (float) $srcLot->unit_cost;
+            $value = round($unitCost * $qty, 2);
+            $now = now();
+            $companyId = (int) $srcLot->company_id;
+
+            // Post TRANSFER_OUT
+            $this->postMovement([
+                'transaction_number' => sprintf('TRF-OUT-%s-%s', $lotNumber, $now->format('YmdHis')),
+                'date' => $transfer->date ?? $now->toDateString(),
+                'company_id' => $companyId,
+                'branch_id' => $srcBranchId,
+                'item_id' => $itemId,
+                'type' => 'TRANSFER_OUT',
+                'quantity' => $qty,
+                'signed_quantity' => -$qty,
+                'rate' => $unitCost,
+                'amount' => $value,
+                'lot_number' => $lotNumber,
+                'unit_id' => $transfer->unit_id,
+                'reference_type' => 'TRANSFER',
+                'reference_id' => $transfer->id,
+                'source_reference' => $transfer->transfer_number,
+                'destination' => 'Godown #'.$destBranchId,
+                'status' => 'POSTED',
+                'created_by' => $userId,
+            ]);
+
+            // Add to destination lot
+            $destLot = Lot::where('company_id', $companyId)
+                ->where('branch_id', $destBranchId)
+                ->where('item_id', $itemId)
+                ->where('lot_number', $lotNumber)
+                ->lockForUpdate()
+                ->first();
+
+            if ($destLot && $destLot->status === 'OPEN') {
+                $destLot->increment('received_qty', $qty);
+                $destLot->increment('available_qty', $qty);
+                $destLot->increment('stock_value', $value);
+            } else {
+                $destLot = Lot::create([
+                    'company_id' => $companyId,
+                    'branch_id' => $destBranchId,
+                    'item_id' => $itemId,
+                    'grade_id' => $srcLot->grade_id,
+                    'lot_number' => $lotNumber,
+                    'oil_pct' => $srcLot->oil_pct,
+                    'opening_qty' => 0,
+                    'received_qty' => $qty,
+                    'issued_qty' => 0,
+                    'available_qty' => $qty,
+                    'reserved_qty' => 0,
+                    'unit_id' => $transfer->unit_id,
+                    'unit_cost' => $unitCost,
+                    'stock_value' => $value,
+                    'source' => 'transfer',
+                    'status' => 'OPEN',
+                ]);
+            }
+
+            // Post TRANSFER_IN
+            $this->postMovement([
+                'transaction_number' => sprintf('TRF-IN-%s-%s', $lotNumber, $now->format('YmdHis')),
+                'date' => $transfer->date ?? $now->toDateString(),
+                'company_id' => $companyId,
+                'branch_id' => $destBranchId,
+                'item_id' => $itemId,
+                'type' => 'TRANSFER_IN',
+                'quantity' => $qty,
+                'signed_quantity' => $qty,
+                'rate' => $unitCost,
+                'amount' => $value,
+                'lot_number' => $lotNumber,
+                'unit_id' => $transfer->unit_id,
+                'reference_type' => 'TRANSFER',
+                'reference_id' => $transfer->id,
+                'source_reference' => $transfer->transfer_number,
+                'customer' => 'From Godown #'.$srcBranchId,
+                'status' => 'POSTED',
+                'created_by' => $userId,
+            ]);
+
+            $transfer->restore();
+            return $transfer;
         });
     }
 

@@ -215,6 +215,7 @@
         &nbsp;|&nbsp;
         <strong>Godown:</strong> {{ $branchName ?: 'All Godowns' }} &nbsp;|&nbsp;
         <strong>Item / Commodity:</strong> {{ $itemName ?: 'All Items' }} &nbsp;|&nbsp;
+        <strong>Lot:</strong> {{ $lotNumber ?: 'All Lots' }} &nbsp;|&nbsp;
         <strong>Generated on:</strong> {{ date('d-m-Y H:i') }}
     </div>
 

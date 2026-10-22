@@ -24,7 +24,6 @@ class VendorLedgerController extends Controller
         $query = VendorLedger::with(['branch', 'creator'])
             ->where('vendor_id', $vendor->id)
             ->whereNotIn('document_type', ['invoice', 'settlement', 'settlement_cancellation', 'INVOICE', 'SETTLEMENT']);
-        $this->scopeBranches($query);
 
         if ($request->filled('branch_id')) {
             $query->where('branch_id', $request->branch_id);
@@ -81,12 +80,16 @@ class VendorLedgerController extends Controller
 
         $vendor = Vendor::findOrFail($request->vendor_id);
         $this->guardCompanyOwnership($vendor);
-        $this->guardBranchAccess($request->branch_id);
+
+        $branchId = $request->branch_id;
+        if (empty($branchId)) {
+            $branchId = Branch::where('company_id', $vendor->company_id)->value('id') ?? Branch::value('id');
+        }
 
         $isDebit = $request->transaction_type === 'debit';
         $entry = VendorLedger::postTransaction([
             'vendor_id' => $request->vendor_id,
-            'branch_id' => $request->branch_id,
+            'branch_id' => $branchId,
             'transaction_date' => $request->transaction_date,
             'document_type' => $isDebit ? 'payment_adjustment' : 'receipt_adjustment',
             'document_number' => $request->document_number ?? 'ADJ-' . time(),
@@ -117,7 +120,6 @@ class VendorLedgerController extends Controller
         $query = VendorLedger::with(['branch'])
             ->where('vendor_id', $vendor->id)
             ->whereNotIn('document_type', ['invoice', 'settlement', 'settlement_cancellation', 'INVOICE', 'SETTLEMENT']);
-        $this->scopeBranches($query);
 
         if ($request->filled('branch_id')) {
             $query->where('branch_id', $request->branch_id);

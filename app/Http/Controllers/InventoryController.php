@@ -94,11 +94,13 @@ class InventoryController extends Controller
 
             $in = (clone $inQ)->where('type', 'STOCK_IN')->sum('quantity')
                 + (clone $inQ)->where('type', 'TRANSFER_IN')->sum('quantity')
-                + (clone $inQ)->where('type', 'ADJUSTMENT_IN')->sum('quantity');
+                + (clone $inQ)->where('type', 'ADJUSTMENT_IN')->sum('quantity')
+                + (clone $inQ)->where('type', 'PRODUCTION_OUT')->sum('quantity');
 
             $out = (clone $outQ)->where('type', 'STOCK_OUT')->sum('quantity')
                 + (clone $outQ)->where('type', 'TRANSFER_OUT')->sum('quantity')
-                + (clone $outQ)->where('type', 'ADJUSTMENT_OUT')->sum('quantity');
+                + (clone $outQ)->where('type', 'ADJUSTMENT_OUT')->sum('quantity')
+                + (clone $outQ)->where('type', 'PRODUCTION_IN')->sum('quantity');
 
             // Cumulative available stock as of dateTo (or all time if no dateTo)
             $allTx = InventoryTransaction::where('item_id', $item->id)
@@ -116,11 +118,13 @@ class InventoryController extends Controller
 
             $cumIn = (clone $allTx)->where('type', 'STOCK_IN')->sum('quantity')
                 + (clone $allTx)->where('type', 'TRANSFER_IN')->sum('quantity')
-                + (clone $allTx)->where('type', 'ADJUSTMENT_IN')->sum('quantity');
+                + (clone $allTx)->where('type', 'ADJUSTMENT_IN')->sum('quantity')
+                + (clone $allTx)->where('type', 'PRODUCTION_OUT')->sum('quantity');
 
             $cumOut = (clone $allTx)->where('type', 'STOCK_OUT')->sum('quantity')
                 + (clone $allTx)->where('type', 'TRANSFER_OUT')->sum('quantity')
-                + (clone $allTx)->where('type', 'ADJUSTMENT_OUT')->sum('quantity');
+                + (clone $allTx)->where('type', 'ADJUSTMENT_OUT')->sum('quantity')
+                + (clone $allTx)->where('type', 'PRODUCTION_IN')->sum('quantity');
 
             $available = round((float) $cumIn - (float) $cumOut, 3);
             $totIn = round((float) $in, 3);
@@ -229,6 +233,7 @@ class InventoryController extends Controller
         if ($request->filled('branch_id')) $query->where('branch_id', $request->branch_id);
         if ($request->filled('date_from')) $query->whereDate('date', '>=', $request->date_from);
         if ($request->filled('date_to')) $query->whereDate('date', '<=', $request->date_to);
+        if ($request->filled('lot_number')) $query->where('lot_number', $request->lot_number);
 
         $txs = $query->get();
 
@@ -241,6 +246,7 @@ class InventoryController extends Controller
             $this->scopeActiveVendorTransactions($priorQuery);
             if ($request->filled('item_id')) $priorQuery->where('item_id', $request->item_id);
             if ($request->filled('branch_id')) $priorQuery->where('branch_id', $request->branch_id);
+            if ($request->filled('lot_number')) $priorQuery->where('lot_number', $request->lot_number);
             $priorBalances = $priorQuery->selectRaw("CONCAT(branch_id, '_', item_id) as k, SUM(signed_quantity) as total_qty")
                 ->groupBy('branch_id', 'item_id')
                 ->pluck('total_qty', 'k');
@@ -263,6 +269,8 @@ class InventoryController extends Controller
                 'ADJUSTMENT_IN' => ['adj' => $tx->quantity],
                 'ADJUSTMENT_OUT' => ['adj' => -$tx->quantity],
                 'OPENING' => ['in' => $tx->quantity],
+                'PRODUCTION_IN' => ['out' => $tx->quantity],
+                'PRODUCTION_OUT' => ['in' => $tx->quantity],
             ];
             $cols = $map[$tx->type] ?? [];
 
@@ -290,9 +298,14 @@ class InventoryController extends Controller
             if ($tx->type === 'ADJUSTMENT_IN') $inQty = round((float) $tx->quantity, 3);
             if ($tx->type === 'ADJUSTMENT_OUT') $outQty = round((float) $tx->quantity, 3);
 
-            $displayType = (in_array($tx->type, ['STOCK_IN', 'TRANSFER_IN', 'ADJUSTMENT_IN', 'OPENING', 'PRODUCTION_OUT']) || $inQty > 0)
-                ? 'STOCK_IN'
-                : 'STOCK_OUT';
+            $typeLabels = [
+                'TRANSFER_IN' => 'TRANSFER_IN',
+                'TRANSFER_OUT' => 'TRANSFER_OUT',
+                'PRODUCTION_IN' => 'MIXING_OUT',
+                'PRODUCTION_OUT' => 'MIXING_IN',
+            ];
+            $displayType = $typeLabels[$tx->type]
+                ?? ((in_array($tx->type, ['STOCK_IN', 'ADJUSTMENT_IN', 'OPENING']) || $inQty > 0) ? 'STOCK_IN' : 'STOCK_OUT');
 
             return [
                 'date' => $tx->date->toDateString(),
@@ -336,6 +349,7 @@ class InventoryController extends Controller
         if ($request->filled('branch_id')) $query->where('branch_id', $request->branch_id);
         if ($request->filled('date_from')) $query->whereDate('date', '>=', $request->date_from);
         if ($request->filled('date_to')) $query->whereDate('date', '<=', $request->date_to);
+        if ($request->filled('lot_number')) $query->where('lot_number', $request->lot_number);
 
         $txs = $query->get();
 
@@ -347,6 +361,7 @@ class InventoryController extends Controller
             $this->scopeActiveVendorTransactions($priorQuery);
             if ($request->filled('item_id')) $priorQuery->where('item_id', $request->item_id);
             if ($request->filled('branch_id')) $priorQuery->where('branch_id', $request->branch_id);
+            if ($request->filled('lot_number')) $priorQuery->where('lot_number', $request->lot_number);
             $priorBalances = $priorQuery->selectRaw("CONCAT(branch_id, '_', item_id) as k, SUM(signed_quantity) as total_qty")
                 ->groupBy('branch_id', 'item_id')
                 ->pluck('total_qty', 'k');
@@ -373,6 +388,8 @@ class InventoryController extends Controller
                 'ADJUSTMENT_IN' => ['adj' => $tx->quantity],
                 'ADJUSTMENT_OUT' => ['adj' => -$tx->quantity],
                 'OPENING' => ['in' => $tx->quantity],
+                'PRODUCTION_IN' => ['out' => $tx->quantity],
+                'PRODUCTION_OUT' => ['in' => $tx->quantity],
             ];
             $cols = $map[$tx->type] ?? [];
 
@@ -404,9 +421,14 @@ class InventoryController extends Controller
             $totOut += $outQty;
             $latestClosingByKey[$key] = round($closing, 3);
 
-            $displayType = (in_array($tx->type, ['STOCK_IN', 'TRANSFER_IN', 'ADJUSTMENT_IN', 'OPENING', 'PRODUCTION_OUT']) || $inQty > 0)
-                ? 'STOCK_IN'
-                : 'STOCK_OUT';
+            $typeLabels = [
+                'TRANSFER_IN' => 'TRANSFER_IN',
+                'TRANSFER_OUT' => 'TRANSFER_OUT',
+                'PRODUCTION_IN' => 'MIXING_OUT',
+                'PRODUCTION_OUT' => 'MIXING_IN',
+            ];
+            $displayType = $typeLabels[$tx->type]
+                ?? ((in_array($tx->type, ['STOCK_IN', 'ADJUSTMENT_IN', 'OPENING']) || $inQty > 0) ? 'STOCK_IN' : 'STOCK_OUT');
 
             return [
                 'date' => $tx->date->toDateString(),
@@ -443,6 +465,7 @@ class InventoryController extends Controller
             'dateTo' => $request->date_to,
             'branchName' => $branchName,
             'itemName' => $itemName,
+            'lotNumber' => $request->filled('lot_number') ? $request->lot_number : null,
             'totIn' => $totIn,
             'totOut' => $totOut,
             'totClosing' => $totClosing,
@@ -481,10 +504,12 @@ class InventoryController extends Controller
                 $inq = InventoryTransaction::where('item_id', $id)->whereIn('branch_id', $ids)->where('status', 'POSTED');
                 $in = (clone $inq)->where('type', 'STOCK_IN')->sum('quantity')
                     + (clone $inq)->where('type', 'TRANSFER_IN')->sum('quantity')
-                    + (clone $inq)->where('type', 'ADJUSTMENT_IN')->sum('quantity');
+                    + (clone $inq)->where('type', 'ADJUSTMENT_IN')->sum('quantity')
+                    + (clone $inq)->where('type', 'PRODUCTION_OUT')->sum('quantity');
                 $out = (clone $inq)->where('type', 'STOCK_OUT')->sum('quantity')
                     + (clone $inq)->where('type', 'TRANSFER_OUT')->sum('quantity')
-                    + (clone $inq)->where('type', 'ADJUSTMENT_OUT')->sum('quantity');
+                    + (clone $inq)->where('type', 'ADJUSTMENT_OUT')->sum('quantity')
+                    + (clone $inq)->where('type', 'PRODUCTION_IN')->sum('quantity');
                 $aggregated[$id]['available'] = round((float)$in - (float)$out, 3);
                 $aggregated[$id]['total_in'] = round((float)$in, 3);
                 $aggregated[$id]['total_out'] = round((float)$out, 3);
@@ -577,6 +602,8 @@ class InventoryController extends Controller
             'lot_id' => ['required', 'exists:lots,id'],
             'quantity' => ['required', 'numeric', 'gt:0'],
             'reference' => ['nullable', 'string', 'max:100'],
+            'vehicle_number' => ['nullable', 'string', 'max:50'],
+            'vehicle' => ['nullable', 'string', 'max:50'],
         ]);
         $data['company_id'] = $data['company_id'] ?? $this->activeCompanyId();
 
@@ -745,6 +772,76 @@ class InventoryController extends Controller
         }
     }
 
+    public function showTransfer(StockTransfer $transfer)
+    {
+        $transfer->load([
+            'fromBranch',
+            'toBranch',
+            'item.unit',
+            'unit',
+            'vehicle',
+            'creator',
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'data' => $transfer,
+        ]);
+    }
+
+    public function updateTransfer(Request $request, StockTransfer $transfer)
+    {
+        $data = $request->validate([
+            'date' => ['nullable', 'date'],
+            'from_branch_id' => ['nullable', 'exists:branches,id'],
+            'source_branch_id' => ['nullable', 'exists:branches,id'],
+            'to_branch_id' => ['nullable', 'exists:branches,id'],
+            'dest_branch_id' => ['nullable', 'exists:branches,id'],
+            'item_id' => ['nullable', 'exists:items,id'],
+            'lot_id' => ['nullable', 'exists:lots,id'],
+            'lot_number' => ['nullable', 'string', 'max:100'],
+            'quantity' => ['required', 'numeric', 'gt:0'],
+            'unit_id' => ['nullable', 'exists:units,id'],
+            'vehicle_number' => ['nullable', 'string', 'max:50'],
+            'vehicle' => ['nullable', 'string', 'max:50'],
+            'driver_name' => ['nullable', 'string', 'max:150'],
+            'driver_mobile' => ['nullable', 'string', 'max:30'],
+            'remarks' => ['nullable', 'string', 'max:1000'],
+            'reference' => ['nullable', 'string', 'max:100'],
+        ]);
+
+        try {
+            $updated = $this->ledger->updateTransfer($transfer, $data, $request->user()->id);
+            return response()->json([
+                'success' => true,
+                'message' => 'Stock transfer updated successfully.',
+                'data' => $updated,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+    }
+
+    public function destroyTransfer(StockTransfer $transfer)
+    {
+        try {
+            $this->ledger->trashTransfer($transfer);
+            return response()->json([
+                'success' => true,
+                'message' => 'Stock transfer moved to trash and inventory reconciled.',
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+    }
+
+    public function singleTransferPdf(StockTransfer $transfer)
+    {
+        $pdf = app(\App\Services\PdfService::class)->generateStockTransferPdf($transfer);
+        $filename = 'Stock_Transfer_' . ($transfer->transfer_number ?: $transfer->id) . '.pdf';
+        return $pdf->stream($filename);
+    }
+
     public function adjustment(Request $request)
     {
         $data = $request->validate([
@@ -820,7 +917,7 @@ class InventoryController extends Controller
 
             $mt = (float) $tx->quantity;
             $bags = (float) ($tx->bags_count ?? 0);
-            $isIn = in_array($tx->type, ['STOCK_IN', 'TRANSFER_IN', 'ADJUSTMENT_IN', 'OPENING']);
+            $isIn = in_array($tx->type, ['STOCK_IN', 'TRANSFER_IN', 'ADJUSTMENT_IN', 'OPENING', 'PRODUCTION_OUT']);
 
             $key = $gId . '_' . $vId . '_' . $pId;
 

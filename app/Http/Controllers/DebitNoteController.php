@@ -25,10 +25,36 @@ class DebitNoteController extends Controller
         $this->calcService = $calcService;
     }
 
+    protected function guardDebitNoteCompany(DebitNote $debitNote): void
+    {
+        $companyId = $this->activeCompanyId();
+        if ($companyId === null) {
+            return;
+        }
+
+        $branchCompanyId = $debitNote->branch?->company_id;
+        if ($branchCompanyId === null || (int) $branchCompanyId !== $companyId) {
+            abort(404, 'Not found.');
+        }
+    }
+
     public function index(Request $request)
     {
-        // Debit notes are isolated through their branch (which belongs to a company)
-        $query = $this->scopeBranches(DebitNote::with(['branch', 'vendor', 'settlement', 'invoice', 'creator']));
+        $companyId = $this->activeCompanyId();
+        $query = DebitNote::with(['branch', 'vendor', 'settlement', 'invoice', 'creator']);
+
+        if ($companyId) {
+            $query->whereHas('branch', function ($q) use ($companyId) {
+                $q->where('company_id', $companyId);
+            });
+        } else {
+            $allowedCompanyIds = request('allowed_company_ids');
+            if (is_array($allowedCompanyIds)) {
+                $query->whereHas('branch', function ($q) use ($allowedCompanyIds) {
+                    $q->whereIn('company_id', $allowedCompanyIds);
+                });
+            }
+        }
 
         if (! $request->filled('vendor_id')) {
             $query->whereHas('vendor', function ($vq) {
@@ -89,8 +115,11 @@ class DebitNoteController extends Controller
     public function store(DebitNoteRequest $request)
     {
         $data = $request->validated();
+        $companyId = $this->activeCompanyId();
 
-        $this->guardBranchAccess($data['branch_id'] ?? null);
+        if (empty($data['branch_id'])) {
+            $data['branch_id'] = \App\Models\Branch::where('company_id', $companyId)->value('id') ?? \App\Models\Branch::value('id');
+        }
 
         $debitNote = DB::transaction(function () use ($data) {
             $branchId = $data['branch_id'];
@@ -178,7 +207,7 @@ class DebitNoteController extends Controller
 
     public function show(DebitNote $debitNote)
     {
-        $this->guardBranchOwnership($debitNote);
+        $this->guardDebitNoteCompany($debitNote);
 
         $debitNote->load(['branch', 'vendor', 'settlement', 'invoice', 'items', 'creator']);
 
@@ -190,7 +219,7 @@ class DebitNoteController extends Controller
 
     public function update(DebitNoteRequest $request, DebitNote $debitNote)
     {
-        $this->guardBranchOwnership($debitNote);
+        $this->guardDebitNoteCompany($debitNote);
 
         if ($debitNote->status === 'cancelled') {
             return response()->json([
@@ -301,7 +330,7 @@ class DebitNoteController extends Controller
 
     public function pdf(DebitNote $debitNote)
     {
-        $this->guardBranchOwnership($debitNote);
+        $this->guardDebitNoteCompany($debitNote);
 
         $pdf = $this->pdfService->generateDebitNotePdf($debitNote);
         $fileName = str_replace(['/', '\\'], '-', $debitNote->debit_note_number) . '.pdf';
@@ -311,7 +340,7 @@ class DebitNoteController extends Controller
 
     public function destroy(DebitNote $debitNote)
     {
-        $this->guardBranchOwnership($debitNote);
+        $this->guardDebitNoteCompany($debitNote);
         $debitNote->delete();
         AuditLog::logAction('deleted', 'DebitNote', $debitNote->id, $debitNote->debit_note_number, null, null, 'Debit note moved to trash');
         return response()->json([

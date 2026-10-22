@@ -175,9 +175,8 @@ class VendorController extends Controller
         $hasLinkedRecords = $vendor->settlements()->exists()
             || $vendor->invoices()->exists()
             || $vendor->debitNotes()->exists()
-            || \App\Models\Inward::where('vendor_id', $vendor->id)->exists()
-            || \App\Models\Outward::where('party_id', $vendor->id)->exists()
-            || \App\Models\Lot::where('vendor_id', $vendor->id)->exists()
+            || \App\Models\InwardEntry::where('party_id', $vendor->id)->exists()
+            || \App\Models\OutwardEntry::where('party_id', $vendor->id)->exists()
             || \App\Models\InventoryTransaction::where('vendor_id', $vendor->id)->orWhere('party_id', $vendor->id)->exists();
 
         if ($hasLinkedRecords) {

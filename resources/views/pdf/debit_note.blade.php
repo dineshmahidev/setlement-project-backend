@@ -9,7 +9,7 @@
             margin: 15mm 15mm 15mm 15mm;
         }
         body {
-            font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+            font-family: 'DejaVu Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif;
             font-size: 11px;
             line-height: 1.4;
             color: #1f2937;
@@ -173,7 +173,7 @@
             <tr>
                 <th style="width: 8%;" class="text-center">S.No</th>
                 <th style="width: 62%;">Particulars / Description</th>
-                <th style="width: 30%;" class="text-right">Amount (Rs.)</th>
+                <th style="width: 30%;" class="text-right">Amount (₹)</th>
             </tr>
         </thead>
         <tbody>
@@ -182,7 +182,7 @@
                 <tr>
                     <td class="text-center">{{ $idx + 1 }}</td>
                     <td>{{ $item->particulars }}</td>
-                    <td class="text-right font-bold">Rs. {{ number_format($item->amount, 2) }}</td>
+                    <td class="text-right font-bold">₹ {{ number_format($item->amount, 2) }}</td>
                 </tr>
                 @endforeach
             @else
@@ -192,39 +192,39 @@
                         <strong>{{ $debitNote->reason }}</strong> on account of quality test variation / settlement differences
                         @if($debitNote->remarks)<br><span style="color: #6b7280; font-size: 9.5px;">{{ $debitNote->remarks }}</span>@endif
                     </td>
-                    <td class="text-right font-bold">Rs. {{ number_format($debitNote->taxable_amount, 2) }}</td>
+                    <td class="text-right font-bold">₹ {{ number_format($debitNote->taxable_amount, 2) }}</td>
                 </tr>
             @endif
             
             <tr style="border-top: 2px solid #9ca3af; background-color: #f9fafb;">
                 <td colspan="2" class="text-right font-bold">Taxable Amount:</td>
-                <td class="text-right font-bold">Rs. {{ number_format($debitNote->taxable_amount, 2) }}</td>
+                <td class="text-right font-bold">₹ {{ number_format($debitNote->taxable_amount, 2) }}</td>
             </tr>
             @if($debitNote->cgst_amount > 0 || $debitNote->sgst_amount > 0)
             <tr>
                 <td colspan="2" class="text-right">CGST ({{ number_format($debitNote->cgst_rate, 2) }}%):</td>
-                <td class="text-right">Rs. {{ number_format($debitNote->cgst_amount, 2) }}</td>
+                <td class="text-right">₹ {{ number_format($debitNote->cgst_amount, 2) }}</td>
             </tr>
             <tr>
                 <td colspan="2" class="text-right">SGST ({{ number_format($debitNote->sgst_rate, 2) }}%):</td>
-                <td class="text-right">Rs. {{ number_format($debitNote->sgst_amount, 2) }}</td>
+                <td class="text-right">₹ {{ number_format($debitNote->sgst_amount, 2) }}</td>
             </tr>
             @endif
             @if($debitNote->igst_amount > 0)
             <tr>
                 <td colspan="2" class="text-right">IGST ({{ number_format($debitNote->igst_rate, 2) }}%):</td>
-                <td class="text-right">Rs. {{ number_format($debitNote->igst_amount, 2) }}</td>
+                <td class="text-right">₹ {{ number_format($debitNote->igst_amount, 2) }}</td>
             </tr>
             @endif
             <tr style="background-color: #111827; color: #ffffff; font-weight: bold; font-size: 12px;">
                 <td colspan="2" class="text-right"><strong>TOTAL {{ strtoupper($debitNote->transaction_type) }} NOTE AMOUNT:</strong></td>
-                <td class="text-right"><strong>Rs. {{ number_format($debitNote->total_amount, 2) }}</strong></td>
+                <td class="text-right"><strong>₹ {{ number_format($debitNote->total_amount, 2) }}</strong></td>
             </tr>
         </tbody>
     </table>
 
     <div style="font-size: 10px; color: #4b5563; margin-top: 10px;">
-        <strong>Accounting Impact:</strong> We have debited/credited your ledger account with <strong>Rs. {{ number_format($debitNote->total_amount, 2) }}</strong> against invoice #{{ $debitNote->invoice_number ?? 'N/A' }}.
+        <strong>Accounting Impact:</strong> We have debited/credited your ledger account with <strong>₹ {{ number_format($debitNote->total_amount, 2) }}</strong> against invoice #{{ $debitNote->invoice_number ?? 'N/A' }}.
     </div>
 
     <!-- Signatures -->

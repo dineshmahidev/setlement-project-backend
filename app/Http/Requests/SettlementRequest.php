@@ -17,7 +17,7 @@ class SettlementRequest extends FormRequest
 
         return [
             'settlement_number' => ['nullable', 'string', 'max:50', 'unique:settlements,settlement_number,' . $id],
-            'branch_id' => ['required', 'exists:branches,id'],
+            'branch_id' => ['nullable', 'exists:branches,id'],
             'vendor_id' => ['required', 'exists:vendors,id'],
             'product_id' => ['nullable', 'exists:products,id'],
             'invoice_id' => ['nullable', 'exists:invoices,id'],
