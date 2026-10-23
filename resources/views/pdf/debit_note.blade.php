@@ -111,9 +111,13 @@
                 <table style="width: 100%; border-collapse: collapse;">
                     <tr>
                         @if($logoBase64)
-                        <td style="width: 58px; vertical-align: top; padding-right: 10px;">
-                            <img src="{{ $logoBase64 }}" style="max-height: 52px; max-width: 58px; object-fit: contain;" alt="Logo">
-                        </td>
+                            <td style="width: 58px; vertical-align: top; padding-right: 10px;">
+                                <img src="{{ $logoBase64 }}" style="max-height: 52px; max-width: 58px; object-fit: contain;" alt="Logo">
+                            </td>
+                        @else
+                            <td style="width: 58px; vertical-align: top; padding-right: 10px;">
+                                
+                            </td>
                         @endif
                         <td style="vertical-align: top;">
                             <div class="company-title">{{ $company->company_name }}</div>

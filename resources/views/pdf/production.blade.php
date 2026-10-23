@@ -157,9 +157,13 @@
                 <table style="width: 100%; border-collapse: collapse;">
                     <tr>
                         @if($logoBase64)
-                        <td style="width: 58px; vertical-align: middle; padding-right: 10px;">
-                            <img src="{{ $logoBase64 }}" style="max-height: 50px; max-width: 58px; object-fit: contain;" alt="Logo">
-                        </td>
+                            <td style="width: 58px; vertical-align: middle; padding-right: 10px;">
+                                <img src="{{ $logoBase64 }}" style="max-height: 50px; max-width: 58px; object-fit: contain;" alt="Logo">
+                            </td>
+                        @else
+                            <td style="width: 58px; vertical-align: middle; padding-right: 10px;">
+                                
+                            </td>
                         @endif
                         <td style="vertical-align: middle;">
                             <div class="company-title">{{ $company->company_name }}</div>
@@ -222,30 +226,46 @@
     <table class="items-table">
         <thead>
             <tr>
-                <th style="width: 5%;">#</th>
-                <th style="width: 35%;">Input Lot</th>
-                <th style="width: 35%;">Item Name</th>
-                <th class="text-right" style="width: 25%;">Consumed Quantity (MT)</th>
+                <th style="width: 4%;">#</th>
+                <th style="width: 17%;">Input Lot</th>
+                <th style="width: 21%;">Item Name</th>
+                <th style="width: 8%;">Unit</th>
+                <th class="text-right" style="width: 8%;">Oil %</th>
+                <th class="text-right" style="width: 9%;">Rate (₹)</th>
+                <th class="text-right" style="width: 15%;">Amount (₹)</th>
+                <th class="text-right" style="width: 18%;">Consumed Qty</th>
             </tr>
         </thead>
         <tbody>
-            @php $totalInput = 0; @endphp
+            @php $totalInput = 0; $totalInputValue = 0; @endphp
             @forelse($production->inputs as $idx => $in)
-                @php $totalInput += (float)$in->quantity; @endphp
+                @php
+                    $totalInput += (float)$in->quantity;
+                    $inUnit = $in->lot?->unit ?: $in->item?->unit ?: $in->lot?->item?->unit;
+                    $inRate = (float)($in->lot?->unit_cost ?? 0);
+                    $inOil = $in->oil_pct ?? $in->lot?->oil_pct;
+                    $inAmount = round((float)$in->quantity * $inRate, 2);
+                    $totalInputValue += $inAmount;
+                @endphp
                 <tr>
                     <td class="text-center">{{ $idx + 1 }}</td>
                     <td><strong>{{ $in->lot?->lot_number ?: '#'.$in->lot_id }}</strong></td>
                     <td>{{ $in->item?->name ?: ($in->lot?->item?->name ?: '—') }}</td>
+                    <td>{{ $inUnit?->code ?: ($inUnit?->name ?: '—') }}</td>
+                    <td class="text-right">{{ $inOil != null ? number_format((float)$inOil, 2) : '—' }}</td>
+                    <td class="text-right">{{ $inRate ? number_format($inRate, 2) : '—' }}</td>
+                    <td class="text-right">{{ number_format($inAmount, 2) }}</td>
                     <td class="text-right"><strong>{{ number_format((float)$in->quantity, 3) }}</strong></td>
                 </tr>
             @empty
                 <tr>
-                    <td colspan="4" class="text-center" style="padding: 10px; color: #64748b;">No input lots recorded.</td>
+                    <td colspan="8" class="text-center" style="padding: 10px; color: #64748b;">No input lots recorded.</td>
                 </tr>
             @endforelse
             <tr class="total-row">
-                <td colspan="3" class="text-right">TOTAL INPUT QUANTITY:</td>
-                <td class="text-right">{{ number_format($totalInput, 3) }} MT</td>
+                <td colspan="6" class="text-right">TOTAL INPUT:</td>
+                <td class="text-right">₹{{ number_format($totalInputValue, 2) }}</td>
+                <td class="text-right">{{ number_format($totalInput, 3) }}</td>
             </tr>
         </tbody>
     </table>
@@ -255,45 +275,66 @@
     <table class="items-table">
         <thead>
             <tr>
-                <th style="width: 5%;">#</th>
-                <th style="width: 45%;">Output Item</th>
-                <th style="width: 25%;">Output Lot No</th>
-                <th class="text-right" style="width: 25%;">Produced Quantity (MT)</th>
+                <th style="width: 4%;">#</th>
+                <th style="width: 20%;">Output Item</th>
+                <th style="width: 15%;">Output Lot No</th>
+                <th style="width: 7%;">Unit</th>
+                <th style="width: 11%;">Grade</th>
+                <th class="text-right" style="width: 7%;">Oil %</th>
+                <th class="text-right" style="width: 8%;">Rate (₹)</th>
+                <th class="text-right" style="width: 11%;">Amount (₹)</th>
+                <th class="text-right" style="width: 17%;">Produced Qty</th>
             </tr>
         </thead>
         <tbody>
-            @php $totalOutput = 0; @endphp
+            @php $totalOutput = 0; $totalOutputValue = 0; @endphp
             @forelse($production->outputs as $idx => $out)
-                @php $totalOutput += (float)$out->quantity; @endphp
+                @php
+                    $totalOutput += (float)$out->quantity;
+                    $outUnit = $out->item?->unit;
+                    $outRate = (float)($out->lot?->unit_cost ?? 0);
+                    $outOil = $out->oil_pct ?? $out->lot?->oil_pct ?? $production->output_oil_pct;
+                    $outGrade = $out->grade?->code ?: ($out->grade?->name ?: ($production->outputGrade?->code ?: '—'));
+                    $outAmount = round((float)$out->quantity * $outRate, 2);
+                    $totalOutputValue += $outAmount;
+                @endphp
                 <tr>
                     <td class="text-center">{{ $idx + 1 }}</td>
                     <td><strong>{{ $out->item?->name ?: '—' }}</strong></td>
-                    <td>{{ $out->lot?->lot_number ?: ($production->output_lot_number ?: '—') }}</td>
+                    <td>{{ $out->lot?->lot_number ?: ($out->lot_number ?: ($production->output_lot_number ?: '—')) }}</td>
+                    <td>{{ $outUnit?->code ?: ($outUnit?->name ?: '—') }}</td>
+                    <td>{{ $outGrade }}</td>
+                    <td class="text-right">{{ $outOil != null ? number_format((float)$outOil, 2) : '—' }}</td>
+                    <td class="text-right">{{ $outRate ? number_format($outRate, 2) : '—' }}</td>
+                    <td class="text-right">{{ number_format($outAmount, 2) }}</td>
                     <td class="text-right"><strong>{{ number_format((float)$out->quantity, 3) }}</strong></td>
                 </tr>
             @empty
                 <tr>
-                    <td colspan="4" class="text-center" style="padding: 10px; color: #64748b;">No output recorded.</td>
+                    <td colspan="9" class="text-center" style="padding: 10px; color: #64748b;">No output recorded.</td>
                 </tr>
             @endforelse
             <tr class="total-row">
-                <td colspan="3" class="text-right">TOTAL OUTPUT QUANTITY:</td>
-                <td class="text-right">{{ number_format($totalOutput, 3) }} MT</td>
+                <td colspan="7" class="text-right">TOTAL OUTPUT:</td>
+                <td class="text-right">₹{{ number_format($totalOutputValue, 2) }}</td>
+                <td class="text-right">{{ number_format($totalOutput, 3) }}</td>
             </tr>
         </tbody>
     </table>
 
+    {{-- 3. SUMMARY --}}
     @php
         $wastage = $totalInput - $totalOutput;
     @endphp
-    @if($wastage != 0)
-    <div style="margin-bottom: 10px; padding: 4px 8px; background-color: #f8fafc; border: 0.5pt solid #cbd5e1; font-size: 7.5pt;">
-        <strong>Process Variance / Wastage:</strong> {{ number_format($wastage, 3) }} MT
-        @if($totalInput > 0)
-            ({{ number_format(($wastage / $totalInput) * 100, 2) }}%)
-        @endif
-    </div>
-    @endif
+    <table class="items-table" style="margin-top: 4px;">
+        <tbody>
+            <tr>
+                <td style="width: 33.33%; background-color: #f8fafc;"><strong>Total Input Value:</strong> ₹{{ number_format($totalInputValue, 2) }}</td>
+                <td style="width: 33.33%; background-color: #f8fafc;"><strong>Total Output Value:</strong> ₹{{ number_format($totalOutputValue, 2) }}</td>
+                <td style="width: 33.33%; background-color: #f8fafc;"><strong>Process Variance / Wastage:</strong> {{ number_format($wastage, 3) }}@if($totalInput > 0) ({{ number_format(($wastage / $totalInput) * 100, 2) }}%)@endif</td>
+            </tr>
+        </tbody>
+    </table>
 
     @if($production->notes)
     <div class="notes-box">

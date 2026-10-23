@@ -544,12 +544,6 @@ class SettlementController extends Controller
                 $existingNote->delete();
             }
 
-            // Remove any legacy duplicate settlement entries from vendor ledger
-            VendorLedger::where('document_type', 'settlement')
-                ->where('document_id', $settlement->id)
-                ->delete();
-            VendorLedger::recalculateBalances($settlement->vendor_id);
-
             AuditLog::logAction('updated', 'Settlement', $settlement->id, $settlement->settlement_number, $old, $settlement->toArray(), 'Settlement updated');
 
             return $settlement;
@@ -582,11 +576,6 @@ class SettlementController extends Controller
             $settlement->status = 'cancelled';
             $settlement->cancellation_reason = $request->cancellation_reason;
             $settlement->save();
-
-            // Remove legacy settlement entry from ledger if present
-            VendorLedger::where('document_type', 'settlement')
-                ->where('document_id', $settlement->id)
-                ->delete();
 
             // Cancel any linked debit notes
             foreach ($settlement->debitNotes as $dn) {

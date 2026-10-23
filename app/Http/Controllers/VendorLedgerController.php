@@ -14,16 +14,27 @@ class VendorLedgerController extends Controller
     public function index(Request $request)
     {
         $request->validate([
-            'vendor_id' => 'required|exists:vendors,id',
+            'vendor_id' => 'nullable|integer|exists:vendors,id',
         ]);
 
-        $vendor = Vendor::findOrFail($request->vendor_id);
-        $this->guardCompanyOwnership($vendor);
-        $this->syncSettlements($vendor);
+        $vendor = null;
+        if ($request->filled('vendor_id')) {
+            $vendor = Vendor::findOrFail($request->vendor_id);
+            $this->guardCompanyOwnership($vendor);
+        }
 
-        $query = VendorLedger::with(['branch', 'creator'])
-            ->where('vendor_id', $vendor->id)
-            ->whereNotIn('document_type', ['invoice', 'settlement', 'settlement_cancellation', 'INVOICE', 'SETTLEMENT']);
+        // Settlement bills already post real debit/credit notes to the ledger.
+        // Their mirrored 'settlement' rows are intentionally NOT shown.
+        $query = VendorLedger::with(['branch', 'creator', 'vendor:id,vendor_name,vendor_code,opening_balance,company_id'])
+            ->whereNotIn('document_type', ['invoice', 'INVOICE', 'settlement', 'settlement_cancellation']);
+
+        if ($vendor) {
+            $query->where('vendor_id', $vendor->id);
+        } else {
+            // No vendor picked → every entry belonging to the ACTIVE COMPANY only.
+            // vendor_ledger has no company_id, so scope through its parent vendor.
+            $this->scopeLedgerCompany($query);
+        }
 
         if ($request->filled('branch_id')) {
             $query->where('branch_id', $request->branch_id);
@@ -44,6 +55,10 @@ class VendorLedgerController extends Controller
 
         if ($request->filled('from_date') && $request->filled('to_date')) {
             $query->whereBetween('transaction_date', [$request->from_date, $request->to_date]);
+        } elseif ($request->filled('from_date')) {
+            $query->where('transaction_date', '>=', $request->from_date);
+        } elseif ($request->filled('to_date')) {
+            $query->where('transaction_date', '<=', $request->to_date);
         }
 
         $entries = $query->orderBy('transaction_date', 'asc')->orderBy('id', 'asc')->get();
@@ -51,19 +66,35 @@ class VendorLedgerController extends Controller
         // Calculate summary
         $totalDebit = $entries->sum('debit');
         $totalCredit = $entries->sum('credit');
-        $closingBalance = $vendor->current_balance;
 
         return response()->json([
             'success' => true,
             'data' => [
                 'vendor' => $vendor,
-                'opening_balance' => $vendor->opening_balance,
+                'opening_balance' => $vendor ? $vendor->opening_balance : 0,
                 'entries' => $entries,
+                'entry_count' => $entries->count(),
                 'total_debit' => $totalDebit,
                 'total_credit' => $totalCredit,
-                'closing_balance' => $closingBalance,
+                'closing_balance' => $vendor ? $vendor->current_balance : null,
             ],
         ]);
+    }
+
+    /**
+     * Restrict a vendor_ledger query to the active company.
+     * The table has no company_id — scope through the parent vendor row.
+     */
+    private function scopeLedgerCompany($query): void
+    {
+        $companyId = $this->activeCompanyId();
+        $allowed = request('allowed_company_ids');
+
+        if ($companyId) {
+            $query->whereHas('vendor', fn ($q) => $q->where('company_id', $companyId));
+        } elseif (is_array($allowed) && count($allowed) > 0) {
+            $query->whereHas('vendor', fn ($q) => $q->whereIn('company_id', $allowed));
+        }
     }
 
     public function storeAdjustment(Request $request)
@@ -110,16 +141,23 @@ class VendorLedgerController extends Controller
     public function exportPdf(Request $request)
     {
         $request->validate([
-            'vendor_id' => 'required|exists:vendors,id',
+            'vendor_id' => 'nullable|integer|exists:vendors,id',
         ]);
 
-        $vendor = Vendor::findOrFail($request->vendor_id);
-        $this->guardCompanyOwnership($vendor);
-        $this->syncSettlements($vendor);
+        $vendor = null;
+        if ($request->filled('vendor_id')) {
+            $vendor = Vendor::findOrFail($request->vendor_id);
+            $this->guardCompanyOwnership($vendor);
+        }
 
-        $query = VendorLedger::with(['branch'])
-            ->where('vendor_id', $vendor->id)
-            ->whereNotIn('document_type', ['invoice', 'settlement', 'settlement_cancellation', 'INVOICE', 'SETTLEMENT']);
+        $query = VendorLedger::with(['branch', 'vendor:id,vendor_name,vendor_code,opening_balance'])
+            ->whereNotIn('document_type', ['invoice', 'INVOICE', 'settlement', 'settlement_cancellation']);
+
+        if ($vendor) {
+            $query->where('vendor_id', $vendor->id);
+        } else {
+            $this->scopeLedgerCompany($query);
+        }
 
         if ($request->filled('branch_id')) {
             $query->where('branch_id', $request->branch_id);
@@ -128,9 +166,15 @@ class VendorLedgerController extends Controller
             $docType = strtolower($request->document_type);
             $query->where(function ($q) use ($docType) {
                 if ($docType === 'debit_note') {
-                    $q->whereIn('document_type', ['debit_note', 'DEBIT_NOTE', 'payment_adjustment', 'ADVANCE']);
+                    $q->whereIn('document_type', ['debit_note', 'DEBIT_NOTE', 'payment_adjustment', 'ADVANCE'])
+                        ->orWhere(function ($s) {
+                            $s->where('document_type', 'settlement')->where('debit', '>', 0);
+                        });
                 } elseif ($docType === 'credit_note') {
-                    $q->whereIn('document_type', ['credit_note', 'CREDIT_NOTE', 'receipt_adjustment']);
+                    $q->whereIn('document_type', ['credit_note', 'CREDIT_NOTE', 'receipt_adjustment'])
+                        ->orWhere(function ($s) {
+                            $s->where('document_type', 'settlement')->where('credit', '>', 0);
+                        });
                 } else {
                     $q->whereRaw('LOWER(document_type) = ?', [$docType]);
                 }
@@ -145,11 +189,11 @@ class VendorLedgerController extends Controller
         }
 
         $entries = $query->orderBy('transaction_date', 'asc')->orderBy('id', 'asc')->get();
-        $company = app(\App\Services\PdfService::class)->resolveCompany($vendor->branch_id ?? null);
+        $company = app(\App\Services\PdfService::class)->resolveCompany($vendor?->branch_id ?? null);
 
         $totalDebit = (float) $entries->sum('debit');
         $totalCredit = (float) $entries->sum('credit');
-        $closingBalance = (float) $vendor->current_balance;
+        $closingBalance = $vendor ? (float) $vendor->current_balance : 0.0;
 
         $pdf = Pdf::loadView('pdf.vendor_ledger', [
             'vendor' => $vendor,
@@ -162,19 +206,7 @@ class VendorLedgerController extends Controller
             'closingBalance' => $closingBalance,
         ])->setPaper('a4', 'portrait');
 
-        return $pdf->stream('Vendor_Ledger_' . $vendor->vendor_code . '.pdf');
-    }
-
-    private function syncSettlements(Vendor $vendor): void
-    {
-        // Legacy settlement and invoice entries are purged so only debit/credit notes appear in vendor ledger
-        $deleted = VendorLedger::where('vendor_id', $vendor->id)
-            ->whereIn('document_type', ['settlement', 'settlement_cancellation', 'invoice', 'INVOICE', 'SETTLEMENT'])
-            ->delete();
-
-        if ($deleted > 0) {
-            VendorLedger::recalculateBalances($vendor->id);
-        }
+        return $pdf->stream('Vendor_Ledger_' . ($vendor->vendor_code ?? $company->code ?? 'ALL') . '.pdf');
     }
 
     private function renderLedgerHtml($vendor, $entries, $company, $fromDate, $toDate)

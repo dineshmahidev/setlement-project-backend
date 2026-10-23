@@ -981,6 +981,7 @@ class InventoryLedgerService
 
             $companyId = (int) $batch->company_id;
             $inputTotal = 0.0;
+            $consumedCost = 0.0;
 
             // Consume source lots
             foreach ($batch->inputs as $in) {
@@ -995,6 +996,7 @@ class InventoryLedgerService
                     throw new \RuntimeException(sprintf('Insufficient lot %s: need %s, have %s.', $lot->lot_number, $qty, $avail));
                 }
                 $cost = (float) $lot->unit_cost;
+                $consumedCost += round($qty * $cost, 2);
                 $lot->update([
                     'issued_qty' => $lot->issued_qty + $qty,
                     'available_qty' => $avail - $qty,
@@ -1023,16 +1025,32 @@ class InventoryLedgerService
                 ]);
             }
 
-            // Create output lot
+            // Create output lot(s)
             $outputTotal = 0.0;
             $destBranch = (int) $batch->dest_branch_id;
             foreach ($batch->outputs as $out) {
+                $outputTotal += (float) $out->quantity;
+            }
+            // Cost transferred = value actually consumed from input lots (not their full stock_value)
+            $unitCost = $outputTotal > 0 ? round($consumedCost / $outputTotal, 4) : 0;
+
+            foreach ($batch->outputs as $out) {
                 $qty = (float) $out->quantity;
-                $outputTotal += $qty;
-                $lotNo = $batch->output_lot_number ?: sprintf('PRD-%s', $batch->batch_number);
-                // value inputs (cost transferred, no new purchase cost)
-                $inputCost = (float) $batch->inputs->sum(fn ($i) => (float) Lot::find($i->lot_id)?->stock_value);
-                $unitCost = $outputTotal > 0 ? round($inputCost / max($outputTotal, 1), 4) : 0;
+                // Per-output lot number; fallbacks: user lot no → batch lot no → auto PRD-{batch}
+                $baseLotNo = $out->lot_number ?: ($batch->output_lot_number ?: sprintf('PRD-%s', $batch->batch_number));
+                // Unique per (company, branch, item) — suffix -2, -3 on collision
+                $lotNo = $baseLotNo;
+                $suffix = 2;
+                while (
+                    Lot::withTrashed()
+                        ->where('company_id', $companyId)
+                        ->where('branch_id', $destBranch)
+                        ->where('item_id', $out->item_id)
+                        ->where('lot_number', $lotNo)
+                        ->exists()
+                ) {
+                    $lotNo = substr($baseLotNo, 0, 90).'-'.$suffix++;
+                }
 
                 $lot = Lot::create([
                     'company_id' => $companyId,
@@ -1045,14 +1063,14 @@ class InventoryLedgerService
                     'received_qty' => $qty,
                     'issued_qty' => 0,
                     'available_qty' => $qty,
-                    'unit_id' => null,
+                    'unit_id' => $out->item->unit_id ?? $out->item?->unit?->id ?? null,
                     'unit_cost' => $unitCost,
                     'stock_value' => round($qty * $unitCost, 2),
                     'source' => 'PRODUCTION',
                     'source_id' => $batch->id,
                     'status' => 'OPEN',
                 ]);
-                $out->update(['lot_id' => $lot->id]);
+                $out->update(['lot_id' => $lot->id, 'lot_number' => $lotNo]);
 
                 $this->postMovement([
                     'transaction_number' => $batch->batch_number.'-OUT-'.str_pad((string) $out->id, 3, '0', STR_PAD_LEFT),
@@ -1124,7 +1142,7 @@ class InventoryLedgerService
             $unitCost = (float) ($lot->unit_cost ?? ($lot->received_qty > 0 ? $lot->stock_value / $lot->received_qty : 0));
             $value = round($unitCost * $qty, 2);
 
-            $outTxNumber = sprintf('TRF-OUT-%s-%s', $lot->lot_number, $now->format('YmdHis'));
+            $outTxNumber = $this->uniqueTxNumber(sprintf('TRF-OUT-%s-%s', $lot->lot_number, $now->format('YmdHis')));
             $this->postMovement([
                 'transaction_number' => $outTxNumber,
                 'date' => $payload['date'] ?? $now->toDateString(),
@@ -1153,7 +1171,7 @@ class InventoryLedgerService
                 ]);
             }
 
-            $inTxNumber = sprintf('TRF-IN-%s-%s', $lot->lot_number, $now->format('YmdHis'));
+            $inTxNumber = $this->uniqueTxNumber(sprintf('TRF-IN-%s-%s', $lot->lot_number, $now->format('YmdHis')));
             $this->postMovement([
                 'transaction_number' => $inTxNumber,
                 'date' => $payload['date'] ?? $now->toDateString(),
@@ -1290,7 +1308,9 @@ class InventoryLedgerService
                 ]);
             }
 
-            // 4. Delete old ledger transactions
+            // 4. Void old ledger transactions (rename frees the unique
+            //    transaction_number so the repost below can never collide,
+            //    even within the same second as the original post).
             InventoryTransaction::where(function ($q) use ($transfer) {
                 $q->where(function ($qq) use ($transfer) {
                     $qq->where('reference_type', 'TRANSFER')
@@ -1298,7 +1318,7 @@ class InventoryLedgerService
                 })->orWhere(function ($qq) use ($transfer) {
                     $qq->where('source_reference', $transfer->transfer_number);
                 });
-            })->delete();
+            })->orderBy('id')->get()->each(fn (InventoryTransaction $row) => $this->voidRow($row));
 
             // 5. Resolve new source lot and apply new transfer
             $targetSrcLot = null;
@@ -1338,7 +1358,7 @@ class InventoryLedgerService
 
             // Post TRANSFER_OUT
             $this->postMovement([
-                'transaction_number' => sprintf('TRF-OUT-%s-%s', $targetSrcLot->lot_number, $now->format('YmdHis')),
+                'transaction_number' => $this->uniqueTxNumber(sprintf('TRF-OUT-%s-%s', $targetSrcLot->lot_number, $now->format('YmdHis'))),
                 'date' => $payload['date'] ?? $now->toDateString(),
                 'company_id' => $companyId,
                 'branch_id' => $newFromBranch,
@@ -1396,7 +1416,7 @@ class InventoryLedgerService
 
             // Post TRANSFER_IN
             $this->postMovement([
-                'transaction_number' => sprintf('TRF-IN-%s-%s', $targetSrcLot->lot_number, $now->format('YmdHis')),
+                'transaction_number' => $this->uniqueTxNumber(sprintf('TRF-IN-%s-%s', $targetSrcLot->lot_number, $now->format('YmdHis'))),
                 'date' => $payload['date'] ?? $now->toDateString(),
                 'company_id' => $companyId,
                 'branch_id' => $newToBranch,
@@ -1509,7 +1529,7 @@ class InventoryLedgerService
                 ]);
             }
 
-            // Delete or soft-delete ledger transactions
+            // Void or soft-delete ledger transactions
             InventoryTransaction::where(function ($q) use ($transfer) {
                 $q->where(function ($qq) use ($transfer) {
                     $qq->where('reference_type', 'TRANSFER')
@@ -1517,7 +1537,7 @@ class InventoryLedgerService
                 })->orWhere(function ($qq) use ($transfer) {
                     $qq->where('source_reference', $transfer->transfer_number);
                 });
-            })->delete();
+            })->orderBy('id')->get()->each(fn (InventoryTransaction $row) => $this->voidRow($row));
 
             $transfer->delete();
             return $transfer;
@@ -1557,7 +1577,7 @@ class InventoryLedgerService
 
             // Post TRANSFER_OUT
             $this->postMovement([
-                'transaction_number' => sprintf('TRF-OUT-%s-%s', $lotNumber, $now->format('YmdHis')),
+                'transaction_number' => $this->uniqueTxNumber(sprintf('TRF-OUT-%s-%s', $lotNumber, $now->format('YmdHis'))),
                 'date' => $transfer->date ?? $now->toDateString(),
                 'company_id' => $companyId,
                 'branch_id' => $srcBranchId,
@@ -1612,7 +1632,7 @@ class InventoryLedgerService
 
             // Post TRANSFER_IN
             $this->postMovement([
-                'transaction_number' => sprintf('TRF-IN-%s-%s', $lotNumber, $now->format('YmdHis')),
+                'transaction_number' => $this->uniqueTxNumber(sprintf('TRF-IN-%s-%s', $lotNumber, $now->format('YmdHis'))),
                 'date' => $transfer->date ?? $now->toDateString(),
                 'company_id' => $companyId,
                 'branch_id' => $destBranchId,

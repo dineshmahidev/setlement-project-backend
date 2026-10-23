@@ -364,11 +364,11 @@ class TrashController extends Controller
                 break;
 
             case 'stock_transfer':
-                $rec->loadMissing(['fromBranch:id,branch_name', 'toBranch:id,branch_name', 'item:id,name', 'unit:id,code,symbol']);
+                $rec->loadMissing(['fromBranch:id,branch_name', 'toBranch:id,branch_name', 'item:id,name', 'unit:id,code']);
                 $title = $rec->transfer_number ?? ('TRF #' . $rec->id);
                 $from = $rec->fromBranch?->branch_name ?? ('Godown #' . $rec->from_branch_id);
                 $to = $rec->toBranch?->branch_name ?? ('Godown #' . $rec->to_branch_id);
-                $unit = $rec->unit?->symbol ?: ($rec->unit?->code ?: 'KG');
+                $unit = $rec->unit?->code ?: 'KG';
                 $subtitle = "From: {$from} -> To: {$to} | Item: " . ($rec->item?->name ?? '-') . " (Qty: " . number_format((float)$rec->quantity, 3) . " {$unit})";
                 break;
         }

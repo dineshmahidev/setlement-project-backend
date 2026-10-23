@@ -164,6 +164,8 @@ class AuthController extends Controller
             'sub_tagline' => $company->sub_tagline,
             'logo_path' => $company->logo_path,
             'logo_transparent_path' => $company->logo_transparent_path,
+            'show_logo_website' => (bool) $company->show_logo_website,
+            'show_logo_pdf' => (bool) $company->show_logo_pdf,
             'banner_path' => $company->banner_path,
             'signature_path' => $company->signature_path,
             'status' => $company->status,

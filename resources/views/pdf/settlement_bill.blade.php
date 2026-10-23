@@ -205,14 +205,7 @@
                 @if($logoBase64)
                     <img src="{{ $logoBase64 }}" style="max-height: 50px; max-width: 58px; object-fit: contain; vertical-align: middle;" alt="Logo">
                 @else
-                    <svg width="36" height="36" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <circle cx="50" cy="50" r="48" fill="#fdfbf7" stroke="#b37d14" stroke-width="2.5"/>
-                        <path d="M50 15 C50 35 30 45 30 65 C30 75 40 85 50 85 C60 85 70 75 70 65 C70 45 50 35 50 15 Z" fill="#0b3558"/>
-                        <path d="M50 20 C50 38 36 48 38 65 C40 73 45 80 50 80 C55 80 60 73 62 65 C64 48 50 38 50 20 Z" fill="#b37d14"/>
-                        <path d="M50 28 L50 82" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
-                        <path d="M42 42 Q50 48 58 42" stroke="#ffffff" stroke-width="2" fill="none"/>
-                        <path d="M40 54 Q50 60 60 54" stroke="#ffffff" stroke-width="2" fill="none"/>
-                    </svg>
+                    
                 @endif
             </td>
             <td class="company-name-cell">

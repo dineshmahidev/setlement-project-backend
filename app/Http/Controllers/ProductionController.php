@@ -35,7 +35,7 @@ class ProductionController extends Controller
             'source_branch_id' => 'nullable|exists:branches,id',
             'dest_branch_id' => 'required|exists:branches,id',
             'date' => 'required|date',
-            'output_item_id' => 'required|exists:items,id',
+            'output_item_id' => 'nullable|exists:items,id',
             'output_grade_id' => 'nullable|exists:grades,id',
             'output_lot_number' => 'nullable|string|max:100',
             'output_oil_pct' => 'nullable|numeric|min:0|max:100',
@@ -49,9 +49,14 @@ class ProductionController extends Controller
             'outputs' => 'required|array|min:1',
             'outputs.*.item_id' => 'required|exists:items,id',
             'outputs.*.quantity' => 'required|numeric|gt:0',
+            'outputs.*.lot_number' => 'nullable|string|max:100',
             'outputs.*.oil_pct' => 'nullable|numeric|min:0|max:100',
             'outputs.*.grade_id' => 'nullable|exists:grades,id',
         ]);
+
+        // Header fields derived from first output row (multi-output safe)
+        $data['output_item_id'] = $data['output_item_id'] ?? $data['outputs'][0]['item_id'];
+        $data['output_lot_number'] = $data['output_lot_number'] ?? ($data['outputs'][0]['lot_number'] ?? null);
 
         $companyId = $this->activeCompanyId() ?? \App\Models\Branch::find($data['dest_branch_id'])?->company_id ?? 1;
         $userId = (int) (auth()->id() ?? $request->user()?->id ?? 1);
@@ -100,7 +105,7 @@ class ProductionController extends Controller
 
     public function show(ProductionBatch $production)
     {
-        $production->load(['party:id,vendor_name,mobile,city', 'inputs.lot:id,lot_number,available_qty,branch_id,item_id', 'inputs.item:id,code,name', 'outputs.item:id,code,name', 'outputs.grade:id,code,name', 'outputs.lot:id,lot_number,available_qty', 'sourceBranch:id,branch_name', 'destBranch:id,branch_name', 'outputItem:id,code,name', 'outputGrade:id,code,name', 'creator:id,name', 'confirmer:id,name']);
+        $production->load(['party:id,vendor_name,phone,city', 'inputs.lot:id,lot_number,available_qty,branch_id,item_id,unit_id,oil_pct,unit_cost', 'inputs.lot.unit:id,code,name', 'inputs.item:id,code,name,unit_id', 'inputs.item.unit:id,code,name', 'outputs.item:id,code,name,unit_id', 'outputs.item.unit:id,code,name', 'outputs.grade:id,code,name', 'outputs.lot:id,lot_number,available_qty,unit_cost,oil_pct', 'sourceBranch:id,branch_name', 'destBranch:id,branch_name', 'outputItem:id,code,name', 'outputGrade:id,code,name', 'creator:id,name', 'confirmer:id,name']);
         return response()->json($production);
     }
 
@@ -111,7 +116,7 @@ class ProductionController extends Controller
             'source_branch_id' => 'nullable|exists:branches,id',
             'dest_branch_id' => 'required|exists:branches,id',
             'date' => 'required|date',
-            'output_item_id' => 'required|exists:items,id',
+            'output_item_id' => 'nullable|exists:items,id',
             'output_grade_id' => 'nullable|exists:grades,id',
             'output_lot_number' => 'nullable|string|max:100',
             'output_oil_pct' => 'nullable|numeric|min:0|max:100',
@@ -125,9 +130,14 @@ class ProductionController extends Controller
             'outputs' => 'required|array|min:1',
             'outputs.*.item_id' => 'required|exists:items,id',
             'outputs.*.quantity' => 'required|numeric|gt:0',
+            'outputs.*.lot_number' => 'nullable|string|max:100',
             'outputs.*.oil_pct' => 'nullable|numeric|min:0|max:100',
             'outputs.*.grade_id' => 'nullable|exists:grades,id',
         ]);
+
+        // Header fields derived from first output row (multi-output safe)
+        $data['output_item_id'] = $data['output_item_id'] ?? $data['outputs'][0]['item_id'];
+        $data['output_lot_number'] = $data['output_lot_number'] ?? ($data['outputs'][0]['lot_number'] ?? null);
 
         $userId = (int) (auth()->id() ?? $request->user()?->id ?? 1);
         $wasConfirmed = ($production->status === 'CONFIRMED');

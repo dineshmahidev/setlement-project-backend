@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Vendor Ledger - {{ $vendor->vendor_name }}</title>
+    <title>Vendor Ledger - {{ $vendor?->vendor_name ?? $company->company_name }}</title>
     <style>
         @page {
             size: A4 portrait;
@@ -148,9 +148,13 @@
                 <table style="width: 100%; border-collapse: collapse;">
                     <tr>
                         @if($logoBase64)
-                        <td style="width: 58px; vertical-align: middle; padding-right: 10px;">
-                            <img src="{{ $logoBase64 }}" style="max-height: 50px; max-width: 58px; object-fit: contain;" alt="Logo">
-                        </td>
+                            <td style="width: 58px; vertical-align: middle; padding-right: 10px;">
+                                <img src="{{ $logoBase64 }}" style="max-height: 50px; max-width: 58px; object-fit: contain;" alt="Logo">
+                            </td>
+                        @else
+                            <td style="width: 58px; vertical-align: middle; padding-right: 10px;">
+                                
+                            </td>
                         @endif
                         <td style="vertical-align: middle;">
                             <div class="company-title">{{ $company->company_name }}</div>
@@ -183,17 +187,21 @@
         <tr>
             <td style="width: 35%;">
                 <div class="info-label">Party / Vendor Name</div>
-                <div class="info-val">{{ $vendor->vendor_name }} ({{ $vendor->vendor_code }})</div>
-                @if($vendor->contact_person)<div style="font-size: 6.5pt; color: #64748b;">Attn: {{ $vendor->contact_person }}</div>@endif
-                @if($vendor->phone)<div style="font-size: 6.5pt; color: #64748b;">Mob: {{ $vendor->phone }}@if($vendor->phone_2) / {{ $vendor->phone_2 }}@endif</div>@endif
+                @if($vendor)
+                    <div class="info-val">{{ $vendor->vendor_name }} ({{ $vendor->vendor_code }})</div>
+                    @if($vendor->contact_person)<div style="font-size: 6.5pt; color: #64748b;">Attn: {{ $vendor->contact_person }}</div>@endif
+                    @if($vendor->phone)<div style="font-size: 6.5pt; color: #64748b;">Mob: {{ $vendor->phone }}@if($vendor->phone_2) / {{ $vendor->phone_2 }}@endif</div>@endif
+                @else
+                    <div class="info-val">All Vendors (Company Statement)</div>
+                @endif
             </td>
             <td style="width: 35%;">
                 <div class="info-label">GSTIN / PAN</div>
-                <div class="info-val">{{ $vendor->gstin ?: '—' }} / {{ $vendor->pan ?: '—' }}</div>
+                <div class="info-val">{{ $vendor ? ($vendor->gstin ?: '—').' / '.($vendor->pan ?: '—') : ($company->gstin ?: '—') }}</div>
             </td>
             <td style="width: 30%;">
                 <div class="info-label">Opening Balance</div>
-                <div class="info-val">₹ {{ number_format((float)$vendor->opening_balance, 2) }}</div>
+                <div class="info-val">₹ {{ number_format((float) ($vendor->opening_balance ?? 0), 2) }}</div>
             </td>
         </tr>
     </table>
@@ -225,6 +233,7 @@
                     <td>
                         {{ $e->description ?: '—' }}
                         @if($e->lot_number)<span style="color: #64748b; font-size: 6.5pt;"> (Lot: {{ $e->lot_number }})</span>@endif
+                        @if(!$vendor && $e->vendor)<span style="color: #64748b; font-size: 6.5pt; display: block;">Vendor: {{ $e->vendor->vendor_name }} ({{ $e->vendor->vendor_code }})</span>@endif
                     </td>
                     <td class="text-right">{{ $d > 0 ? number_format($d, 2) : '—' }}</td>
                     <td class="text-right">{{ $c > 0 ? number_format($c, 2) : '—' }}</td>

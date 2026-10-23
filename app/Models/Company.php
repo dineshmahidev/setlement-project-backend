@@ -52,6 +52,8 @@ class Company extends Model
         'authorized_signatory_title',
         'logo_path',
         'logo_transparent_path',
+        'show_logo_website',
+        'show_logo_pdf',
         'banner_path',
         'signature_path',
         'status',
@@ -67,6 +69,8 @@ class Company extends Model
     {
         return [
             'gst_api_enabled' => 'boolean',
+            'show_logo_website' => 'boolean',
+            'show_logo_pdf' => 'boolean',
         ];
     }
 
@@ -112,9 +116,14 @@ class Company extends Model
 
     /**
      * Resolve the dynamic base64 logo for PDF rendering (DomPDF).
+     * Returns null when the company's "show in PDF" toggle is off —
+     * PDF templates then fall back to the company initials box.
      */
     public function getLogoBase64Attribute(): ?string
     {
+        if (!$this->show_logo_pdf) {
+            return null;
+        }
         if ($this->logo_transparent_path && str_starts_with($this->logo_transparent_path, 'data:image/')) {
             return $this->logo_transparent_path;
         }
@@ -158,6 +167,26 @@ class Company extends Model
             }
         }
         return null;
+    }
+
+    /**
+     * Initials shown when the logo is hidden — first letter of the first
+     * two words of the company name (e.g. "Laxmi Traders" → "LT").
+     * Single word → first 2 letters. No name → "CO".
+     */
+    public function getLogoInitialsAttribute(): string
+    {
+        $words = preg_split('/\s+/', trim((string) $this->company_name)) ?: [];
+        $words = array_values(array_filter($words, fn ($w) => $w !== ''));
+
+        if (count($words) >= 2) {
+            return mb_strtoupper(mb_substr($words[0], 0, 1) . mb_substr($words[1], 0, 1));
+        }
+        if (count($words) === 1) {
+            $initials = mb_strtoupper(mb_substr($words[0], 0, 2));
+            return $initials !== '' ? $initials : 'CO';
+        }
+        return 'CO';
     }
 
     /**

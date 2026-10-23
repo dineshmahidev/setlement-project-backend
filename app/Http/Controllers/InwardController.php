@@ -51,6 +51,7 @@ class InwardController extends Controller
             'load_reference' => 'nullable|string|max:100',
             'bill_no' => 'nullable|string|max:100',
             'notes' => 'nullable|string',
+            'remarks' => 'nullable|string',
             'items' => 'required|array|min:1',
             'items.*.item_id' => 'required|exists:items,id',
             'items.*.lot_number' => 'nullable|string|max:100',
@@ -62,6 +63,11 @@ class InwardController extends Controller
             'items.*.additional_charges' => 'nullable|numeric|min:0',
             'items.*.notes' => 'nullable|string',
         ]);
+
+        if (isset($data['remarks']) && empty($data['notes'])) {
+            $data['notes'] = $data['remarks'];
+        }
+        unset($data['remarks']);
 
         $companyId = $this->activeCompanyId() ?? \App\Models\Branch::find($data['branch_id'])?->company_id ?? 1;
 
