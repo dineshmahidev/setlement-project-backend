@@ -8,7 +8,7 @@ class OutwardItem extends Model
 {
     protected $fillable = [
         'entry_id', 'item_id', 'lot_id', 'quantity', 'unit_id',
-        'oil_pct', 'grade_id', 'rate', 'amount', 'discount',
+        'oil_pct', 'rate', 'amount', 'discount',
         'additional_charges', 'notes',
     ];
 
@@ -27,6 +27,13 @@ class OutwardItem extends Model
     public function entry() { return $this->belongsTo(OutwardEntry::class, 'entry_id'); }
     public function item() { return $this->belongsTo(Item::class); }
     public function lot() { return $this->belongsTo(Lot::class); }
-    public function grade() { return $this->belongsTo(Grade::class); }
     public function unit() { return $this->belongsTo(Unit::class); }
+    public function grade()
+    {
+        return $this->belongsTo(Item::class, 'grade_id')->whereRaw('1=0')->withDefault([
+            'id' => null,
+            'code' => '—',
+            'name' => '—',
+        ]);
+    }
 }

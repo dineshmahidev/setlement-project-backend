@@ -6,7 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class ProductionOutput extends Model
 {
-    protected $fillable = ['batch_id', 'lot_id', 'item_id', 'quantity', 'lot_number', 'oil_pct', 'grade_id'];
+    protected $fillable = ['batch_id', 'lot_id', 'item_id', 'quantity', 'lot_number', 'oil_pct'];
 
     protected function casts(): array
     {
@@ -16,5 +16,12 @@ class ProductionOutput extends Model
     public function batch() { return $this->belongsTo(ProductionBatch::class, 'batch_id'); }
     public function lot() { return $this->belongsTo(Lot::class); }
     public function item() { return $this->belongsTo(Item::class); }
-    public function grade() { return $this->belongsTo(Grade::class); }
+    public function grade()
+    {
+        return $this->belongsTo(Item::class, 'grade_id')->whereRaw('1=0')->withDefault([
+            'id' => null,
+            'code' => '—',
+            'name' => '—',
+        ]);
+    }
 }

@@ -14,7 +14,7 @@ class LotController extends Controller
     public function index(Request $request)
     {
         $companyId = $this->activeCompanyId();
-        $q = Lot::with(['item:id,code,name,material_type', 'item.unit:id,code,name', 'unit:id,code,name', 'grade:id,code,name', 'branch:id,branch_name,branch_code', 'company:id,company_name,short_name'])
+        $q = Lot::with(['item:id,code,name,material_type', 'item.unit:id,code,name', 'unit:id,code,name', 'branch:id,branch_name,branch_code', 'company:id,company_name,short_name'])
             ->orderByDesc('id');
 
         if ($companyId) $q->where('company_id', $companyId);
@@ -66,7 +66,6 @@ class LotController extends Controller
             'item:id,code,name,material_type',
             'item.unit:id,code,name',
             'unit:id,code,name',
-            'grade:id,code,name',
             'branch:id,branch_name,branch_code',
             'company:id,company_name'
         ]);
@@ -165,7 +164,6 @@ class LotController extends Controller
             'item:id,code,name,material_type',
             'item.unit:id,code,name',
             'unit:id,code,name',
-            'grade:id,code,name',
             'branch:id,branch_name,branch_code',
             'company:id,company_name',
         ]);

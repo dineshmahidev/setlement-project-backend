@@ -2,7 +2,6 @@
 
 namespace App\Services;
 
-use App\Models\Grade;
 use App\Models\InwardEntry;
 use App\Models\InventoryTransaction;
 use App\Models\Lot;
@@ -63,13 +62,10 @@ class InventoryLedgerService
         });
     }
 
-    /** ---- Grade auto-assign from measured oil % (never hardcoded) ---- */
+    /** ---- Grade auto-assign discontinued; returns explicit grade id or null ---- */
     public function resolveGrade(?int $companyId, ?float $oilPct, ?string $materialType, ?int $explicitGradeId = null): ?int
     {
-        if ($explicitGradeId) return $explicitGradeId;
-        if ($oilPct === null) return null;
-        $g = Grade::matchForOil($companyId, $oilPct, $materialType);
-        return $g?->id;
+        return $explicitGradeId;
     }
 
     /** ---- Available qty for a specific lot ---- */
@@ -1661,7 +1657,7 @@ class InventoryLedgerService
     public function stockSummary(array $filters = []): array
     {
         $q = Lot::query()
-            ->with(['item:id,code,name,material_type,unit_id', 'item.unit:id,code,name', 'grade:id,code,name', 'branch:id,branch_name,branch_code'])
+            ->with(['item:id,code,name,material_type,unit_id', 'item.unit:id,code,name', 'branch:id,branch_name,branch_code'])
             ->where('status', 'OPEN')
             ->where('available_qty', '>', 0);
 

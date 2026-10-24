@@ -56,6 +56,35 @@ abstract class Controller
     }
 
     /**
+     * Scope an inventory transactions query to the active company, including legacy rows where company_id is null
+     * but branch belongs to the company.
+     */
+    protected function scopeCompanyTransaction($query)
+    {
+        $companyId = $this->activeCompanyId();
+
+        if ($companyId) {
+            $query->where(function ($q) use ($companyId) {
+                $q->where('company_id', $companyId)
+                  ->orWhere(function ($sub) use ($companyId) {
+                      $sub->whereNull('company_id')
+                          ->whereIn('branch_id', \App\Models\Branch::where('company_id', $companyId)->select('id'));
+                  });
+            });
+        } elseif (is_array($allowed = request('allowed_company_ids'))) {
+            $query->where(function ($q) use ($allowed) {
+                $q->whereIn('company_id', $allowed)
+                  ->orWhere(function ($sub) use ($allowed) {
+                      $sub->whereNull('company_id')
+                          ->whereIn('branch_id', \App\Models\Branch::whereIn('company_id', $allowed)->select('id'));
+                  });
+            });
+        }
+
+        return $query;
+    }
+
+    /**
      * Get IDs of all vendors marked as inactive.
      */
     protected function inactiveVendorIds(): array

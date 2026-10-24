@@ -7,7 +7,6 @@ use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\CompanyController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DebitNoteController;
-use App\Http\Controllers\GradeController;
 use App\Http\Controllers\InventoryController;
 use App\Http\Controllers\InvoiceController;
 use App\Http\Controllers\InwardController;
@@ -127,10 +126,7 @@ Route::middleware(['auth:sanctum', 'company.scope'])->group(function () {
     Route::post('/inventory/transfer-lot', [InventoryController::class, 'transferLot'])->middleware('permission:inventory.transfer');
     Route::post('/inventory/adjustment', [InventoryController::class, 'adjustment']);
 
-    // Grades (configurable oil% grade rules)
-    Route::middleware('permission:inventory.view')->group(function () {
-        Route::apiResource('grades', GradeController::class)->except(['create', 'edit']);
-    });
+// Grades removed (oil%-grade feature discontinued). Grade columns stay nullable/inert.
 
     // Lots / lot-wise stock
     Route::middleware('permission:inventory.view')->group(function () {

@@ -20,6 +20,7 @@ class InventoryController extends Controller
             ->orderByDesc('date')->orderByDesc('id');
 
         $this->scopeBranches($query);
+        $this->scopeCompanyTransaction($query);
         $this->scopeActiveVendorTransactions($query);
 
         if ($request->filled('type')) $query->where('type', $request->type);
@@ -227,6 +228,7 @@ class InventoryController extends Controller
             ->where(fn($q) => $q->whereNull('reference_type')->orWhereNotIn('reference_type', ['SETTLEMENT_BILL', 'Settlement Bill', 'SETTLEMENT']));
 
         $this->scopeBranches($query);
+        $this->scopeCompanyTransaction($query);
         $this->scopeActiveVendorTransactions($query);
 
         if ($request->filled('item_id')) $query->where('item_id', $request->item_id);
@@ -243,6 +245,7 @@ class InventoryController extends Controller
                 ->where(fn($q) => $q->whereNull('reference_type')->orWhereNotIn('reference_type', ['SETTLEMENT_BILL', 'Settlement Bill', 'SETTLEMENT']))
                 ->whereDate('date', '<', $request->date_from);
             $this->scopeBranches($priorQuery);
+            $this->scopeCompanyTransaction($priorQuery);
             $this->scopeActiveVendorTransactions($priorQuery);
             if ($request->filled('item_id')) $priorQuery->where('item_id', $request->item_id);
             if ($request->filled('branch_id')) $priorQuery->where('branch_id', $request->branch_id);
@@ -340,9 +343,11 @@ class InventoryController extends Controller
     {
         $query = InventoryTransaction::with(['item.unit', 'branch', 'vendor', 'vehicle'])
             ->orderBy('date')->orderBy('id')
-            ->where('status', 'POSTED');
+            ->where('status', 'POSTED')
+            ->where(fn($q) => $q->whereNull('reference_type')->orWhereNotIn('reference_type', ['SETTLEMENT_BILL', 'Settlement Bill', 'SETTLEMENT']));
 
         $this->scopeBranches($query);
+        $this->scopeCompanyTransaction($query);
         $this->scopeActiveVendorTransactions($query);
 
         if ($request->filled('item_id')) $query->where('item_id', $request->item_id);
@@ -356,8 +361,10 @@ class InventoryController extends Controller
         $running = [];
         if ($request->filled('date_from')) {
             $priorQuery = InventoryTransaction::where('status', 'POSTED')
+                ->where(fn($q) => $q->whereNull('reference_type')->orWhereNotIn('reference_type', ['SETTLEMENT_BILL', 'Settlement Bill', 'SETTLEMENT']))
                 ->whereDate('date', '<', $request->date_from);
             $this->scopeBranches($priorQuery);
+            $this->scopeCompanyTransaction($priorQuery);
             $this->scopeActiveVendorTransactions($priorQuery);
             if ($request->filled('item_id')) $priorQuery->where('item_id', $request->item_id);
             if ($request->filled('branch_id')) $priorQuery->where('branch_id', $request->branch_id);
@@ -877,7 +884,7 @@ class InventoryController extends Controller
             });
 
         $this->scopeBranches($txQuery);
-        $this->scopeCompany($txQuery);
+        $this->scopeCompanyTransaction($txQuery);
         $this->scopeActiveVendorTransactions($txQuery);
 
         if ($branchId) {

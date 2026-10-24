@@ -65,6 +65,7 @@ class InventoryService
         $tx = InventoryTransaction::create([
             'transaction_number' => $this->nextNumber('STKIN'),
             'date' => $bill->bill_date,
+            'company_id' => $bill->company_id ?? \App\Models\Branch::whereKey($bill->branch_id)->value('company_id'),
             'branch_id' => $bill->branch_id,
             'item_id' => $bill->item_id,
             'type' => 'STOCK_IN',
@@ -117,9 +118,12 @@ class InventoryService
                 return $this->postSettlementStockIn($bill, $userId);
             }
 
+            $companyId = $data['company_id'] ?? \App\Models\Branch::whereKey($data['branch_id'])->value('company_id');
+
             $tx = InventoryTransaction::create([
                 'transaction_number' => $data['transaction_number'] ?? $this->nextNumber('STKIN'),
                 'date' => $data['date'],
+                'company_id' => $companyId,
                 'branch_id' => $data['branch_id'],
                 'item_id' => $data['item_id'],
                 'type' => 'STOCK_IN',
@@ -185,9 +189,12 @@ class InventoryService
                 ));
             }
 
+            $companyId = $data['company_id'] ?? \App\Models\Branch::whereKey($data['branch_id'])->value('company_id');
+
             $tx = InventoryTransaction::create([
                 'transaction_number' => $data['transaction_number'] ?? $this->nextNumber('STKOUT'),
                 'date' => $data['date'],
+                'company_id' => $companyId,
                 'branch_id' => $data['branch_id'],
                 'item_id' => $data['item_id'],
                 'type' => 'STOCK_OUT',
@@ -262,10 +269,14 @@ class InventoryService
                 'created_by' => $userId,
             ]);
 
+            $fromCompanyId = \App\Models\Branch::whereKey($from)->value('company_id');
+            $toCompanyId = \App\Models\Branch::whereKey($to)->value('company_id');
+
             // Transfer Out at source
             InventoryTransaction::create([
                 'transaction_number' => $transfer->transfer_number . '-OUT',
                 'date' => $transfer->date,
+                'company_id' => $fromCompanyId,
                 'branch_id' => $from,
                 'item_id' => $transfer->item_id,
                 'type' => 'TRANSFER_OUT',
@@ -289,6 +300,7 @@ class InventoryService
             InventoryTransaction::create([
                 'transaction_number' => $transfer->transfer_number . '-IN',
                 'date' => $transfer->date,
+                'company_id' => $toCompanyId,
                 'branch_id' => $to,
                 'item_id' => $transfer->item_id,
                 'type' => 'TRANSFER_IN',
@@ -367,10 +379,12 @@ class InventoryService
             ]);
 
             $signed = $direction === 'IN' ? $qty : -$qty;
+            $adjCompanyId = \App\Models\Branch::whereKey($adj->branch_id)->value('company_id');
 
             InventoryTransaction::create([
                 'transaction_number' => $adj->adjustment_number,
                 'date' => $adj->date,
+                'company_id' => $adjCompanyId,
                 'branch_id' => $adj->branch_id,
                 'item_id' => $adj->item_id,
                 'type' => $direction === 'IN' ? 'STOCK_IN' : 'STOCK_OUT',

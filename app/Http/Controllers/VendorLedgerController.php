@@ -14,13 +14,21 @@ class VendorLedgerController extends Controller
     public function index(Request $request)
     {
         $request->validate([
-            'vendor_id' => 'nullable|integer|exists:vendors,id',
+            'vendor_id' => 'nullable|integer',
+            'vendor_name' => 'nullable|string',
         ]);
 
         $vendor = null;
         if ($request->filled('vendor_id')) {
-            $vendor = Vendor::findOrFail($request->vendor_id);
-            $this->guardCompanyOwnership($vendor);
+            $vendor = Vendor::find($request->vendor_id);
+            if ($vendor) {
+                $this->guardCompanyOwnership($vendor);
+            }
+        } elseif ($request->filled('vendor_name')) {
+            $companyId = $this->activeCompanyId();
+            $vendor = Vendor::where('vendor_name', trim($request->vendor_name))
+                ->when($companyId, fn ($q) => $q->where('company_id', $companyId))
+                ->first();
         }
 
         // Settlement bills already post real debit/credit notes to the ledger.
@@ -141,13 +149,21 @@ class VendorLedgerController extends Controller
     public function exportPdf(Request $request)
     {
         $request->validate([
-            'vendor_id' => 'nullable|integer|exists:vendors,id',
+            'vendor_id' => 'nullable|integer',
+            'vendor_name' => 'nullable|string',
         ]);
 
         $vendor = null;
         if ($request->filled('vendor_id')) {
-            $vendor = Vendor::findOrFail($request->vendor_id);
-            $this->guardCompanyOwnership($vendor);
+            $vendor = Vendor::find($request->vendor_id);
+            if ($vendor) {
+                $this->guardCompanyOwnership($vendor);
+            }
+        } elseif ($request->filled('vendor_name')) {
+            $companyId = $this->activeCompanyId();
+            $vendor = Vendor::where('vendor_name', trim($request->vendor_name))
+                ->when($companyId, fn ($q) => $q->where('company_id', $companyId))
+                ->first();
         }
 
         $query = VendorLedger::with(['branch', 'vendor:id,vendor_name,vendor_code,opening_balance'])

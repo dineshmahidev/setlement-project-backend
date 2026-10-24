@@ -113,7 +113,7 @@ class ReportController extends Controller
 
     protected function getStockReport($branchId, $itemId = null)
     {
-        $q = \App\Models\Lot::with(['item:id,code,name,material_type', 'grade:id,code,name', 'branch:id,branch_name,branch_code'])
+        $q = \App\Models\Lot::with(['item:id,code,name,material_type', 'branch:id,branch_name,branch_code'])
             ->where('status', 'OPEN')->where('available_qty', '>', 0)
             ->where('company_id', $this->companyId());
         $this->applyBranchFilter($q, $branchId);
@@ -123,19 +123,19 @@ class ReportController extends Controller
         return $lots->map(fn ($l) => [
             'godown' => $l->branch?->branch_name, 'item_code' => $l->item?->code, 'item_name' => $l->item?->name,
             'material_type' => $l->item?->material_type, 'lot_number' => $l->lot_number, 'oil_pct' => $l->oil_pct,
-            'grade' => $l->grade?->name, 'available_qty' => (float) $l->available_qty, 'stock_value' => (float) $l->stock_value,
+            'grade' => null, 'available_qty' => (float) $l->available_qty, 'stock_value' => (float) $l->stock_value,
         ])->values();
     }
 
     protected function getLotReport($branchId, $itemId = null)
     {
-        $q = \App\Models\Lot::with(['item:id,code,name', 'grade:id,code,name', 'branch:id,branch_name'])
+        $q = \App\Models\Lot::with(['item:id,code,name', 'branch:id,branch_name'])
             ->where('company_id', $this->companyId());
         $this->applyBranchFilter($q, $branchId);
         if ($itemId) $q->where('item_id', $itemId);
         return $q->orderBy('id')->get()->map(fn ($l) => [
             'godown' => $l->branch?->branch_name, 'item' => $l->item?->name, 'lot_number' => $l->lot_number,
-            'oil_pct' => $l->oil_pct, 'grade' => $l->grade?->name, 'opening_qty' => (float) $l->opening_qty,
+            'oil_pct' => $l->oil_pct, 'grade' => null, 'opening_qty' => (float) $l->opening_qty,
             'received_qty' => (float) $l->received_qty, 'issued_qty' => (float) $l->issued_qty,
             'available_qty' => (float) $l->available_qty, 'stock_value' => (float) $l->stock_value, 'status' => $l->status,
         ])->values();

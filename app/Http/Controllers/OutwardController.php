@@ -64,7 +64,7 @@ class OutwardController extends Controller
             'items.*.quantity' => 'required|numeric|gt:0',
             'items.*.unit_id' => 'nullable|exists:units,id',
             'items.*.oil_pct' => 'nullable|numeric|min:0|max:100',
-            'items.*.grade_id' => 'nullable|exists:grades,id',
+            'items.*.grade_id' => 'nullable',
             'items.*.rate' => 'nullable|numeric|min:0',
             'items.*.discount' => 'nullable|numeric|min:0',
             'items.*.additional_charges' => 'nullable|numeric|min:0',
@@ -147,7 +147,7 @@ class OutwardController extends Controller
 
     public function show(OutwardEntry $outward)
     {
-        $outward->load(['items.item:id,code,name', 'items.unit:id,code,name', 'items.lot:id,lot_number', 'items.grade:id,code,name', 'party:id,vendor_name,vendor_code', 'branch:id,branch_name,branch_code', 'creator:id,name', 'confirmer:id,name']);
+        $outward->load(['items.item:id,code,name', 'items.unit:id,code,name', 'items.lot:id,lot_number', 'party:id,vendor_name,vendor_code', 'branch:id,branch_name,branch_code', 'creator:id,name', 'confirmer:id,name']);
         return response()->json($outward);
     }
 

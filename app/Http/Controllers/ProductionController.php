@@ -14,7 +14,7 @@ class ProductionController extends Controller
     public function index(Request $request)
     {
         $companyId = $this->activeCompanyId();
-        $q = ProductionBatch::with(['party:id,vendor_name', 'sourceBranch:id,branch_name', 'destBranch:id,branch_name', 'outputItem:id,code,name', 'outputGrade:id,code,name'])
+        $q = ProductionBatch::with(['party:id,vendor_name', 'sourceBranch:id,branch_name', 'destBranch:id,branch_name', 'outputItem:id,code,name'])
             ->orderByDesc('id');
         if ($companyId) $q->where('company_id', $companyId);
         if ($request->filled('status')) $q->where('status', $request->status);
@@ -36,7 +36,7 @@ class ProductionController extends Controller
             'dest_branch_id' => 'required|exists:branches,id',
             'date' => 'required|date',
             'output_item_id' => 'nullable|exists:items,id',
-            'output_grade_id' => 'nullable|exists:grades,id',
+            'output_grade_id' => 'nullable',
             'output_lot_number' => 'nullable|string|max:100',
             'output_oil_pct' => 'nullable|numeric|min:0|max:100',
             'notes' => 'nullable|string',
@@ -51,7 +51,7 @@ class ProductionController extends Controller
             'outputs.*.quantity' => 'required|numeric|gt:0',
             'outputs.*.lot_number' => 'nullable|string|max:100',
             'outputs.*.oil_pct' => 'nullable|numeric|min:0|max:100',
-            'outputs.*.grade_id' => 'nullable|exists:grades,id',
+            'outputs.*.grade_id' => 'nullable',
         ]);
 
         // Header fields derived from first output row (multi-output safe)
@@ -105,7 +105,7 @@ class ProductionController extends Controller
 
     public function show(ProductionBatch $production)
     {
-        $production->load(['party:id,vendor_name,phone,city', 'inputs.lot:id,lot_number,available_qty,branch_id,item_id,unit_id,oil_pct,unit_cost', 'inputs.lot.unit:id,code,name', 'inputs.item:id,code,name,unit_id', 'inputs.item.unit:id,code,name', 'outputs.item:id,code,name,unit_id', 'outputs.item.unit:id,code,name', 'outputs.grade:id,code,name', 'outputs.lot:id,lot_number,available_qty,unit_cost,oil_pct', 'sourceBranch:id,branch_name', 'destBranch:id,branch_name', 'outputItem:id,code,name', 'outputGrade:id,code,name', 'creator:id,name', 'confirmer:id,name']);
+        $production->load(['party:id,vendor_name,phone,city', 'inputs.lot:id,lot_number,available_qty,branch_id,item_id,unit_id,oil_pct,unit_cost', 'inputs.lot.unit:id,code,name', 'inputs.item:id,code,name,unit_id', 'inputs.item.unit:id,code,name', 'outputs.item:id,code,name,unit_id', 'outputs.item.unit:id,code,name', 'outputs.lot:id,lot_number,available_qty,unit_cost,oil_pct', 'sourceBranch:id,branch_name', 'destBranch:id,branch_name', 'outputItem:id,code,name', 'creator:id,name', 'confirmer:id,name']);
         return response()->json($production);
     }
 
@@ -117,7 +117,7 @@ class ProductionController extends Controller
             'dest_branch_id' => 'required|exists:branches,id',
             'date' => 'required|date',
             'output_item_id' => 'nullable|exists:items,id',
-            'output_grade_id' => 'nullable|exists:grades,id',
+            'output_grade_id' => 'nullable',
             'output_lot_number' => 'nullable|string|max:100',
             'output_oil_pct' => 'nullable|numeric|min:0|max:100',
             'notes' => 'nullable|string',
@@ -132,7 +132,7 @@ class ProductionController extends Controller
             'outputs.*.quantity' => 'required|numeric|gt:0',
             'outputs.*.lot_number' => 'nullable|string|max:100',
             'outputs.*.oil_pct' => 'nullable|numeric|min:0|max:100',
-            'outputs.*.grade_id' => 'nullable|exists:grades,id',
+            'outputs.*.grade_id' => 'nullable',
         ]);
 
         // Header fields derived from first output row (multi-output safe)

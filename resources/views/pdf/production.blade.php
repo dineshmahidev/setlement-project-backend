@@ -294,7 +294,7 @@
                     $outUnit = $out->item?->unit;
                     $outRate = (float)($out->lot?->unit_cost ?? 0);
                     $outOil = $out->oil_pct ?? $out->lot?->oil_pct ?? $production->output_oil_pct;
-                    $outGrade = $out->grade?->code ?: ($out->grade?->name ?: ($production->outputGrade?->code ?: '—'));
+                    $outGrade = '—';
                     $outAmount = round((float)$out->quantity * $outRate, 2);
                     $totalOutputValue += $outAmount;
                 @endphp

@@ -224,7 +224,7 @@ class PdfService
 
     public function generateInwardPdf(\App\Models\InwardEntry $inward)
     {
-        $inward->load(['branch', 'party', 'items.item', 'items.unit', 'items.grade', 'creator', 'confirmer']);
+        $inward->load(['branch', 'party', 'items.item', 'items.unit', 'creator', 'confirmer']);
 
         $company = $this->resolveCompany($inward->branch_id);
         $company->state_code = $company->state_code ?: substr((string) $company->gstin, 0, 2);
@@ -239,7 +239,7 @@ class PdfService
 
     public function generateOutwardPdf(\App\Models\OutwardEntry $outward)
     {
-        $outward->load(['branch', 'party', 'items.item', 'items.lot', 'items.unit', 'items.grade', 'creator', 'confirmer']);
+        $outward->load(['branch', 'party', 'items.item', 'items.lot', 'items.unit', 'creator', 'confirmer']);
 
         $company = $this->resolveCompany($outward->branch_id);
         $company->state_code = $company->state_code ?: substr((string) $company->gstin, 0, 2);
@@ -259,12 +259,10 @@ class PdfService
             'destBranch',
             'party',
             'outputItem',
-            'outputGrade',
             'inputs.lot.unit',
             'inputs.lot.item',
             'inputs.item.unit',
             'outputs.item.unit',
-            'outputs.grade',
             'outputs.lot',
             'creator',
             'confirmer',
