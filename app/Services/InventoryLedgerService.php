@@ -528,6 +528,11 @@ class InventoryLedgerService
                 }
             }
 
+            // Void ledger movements so inventory ledger stays in sync
+            InventoryTransaction::where('reference_type', 'INWARD')
+                ->where('reference_id', $entry->id)
+                ->delete();
+
             $entry->delete();
             return $entry;
         });
