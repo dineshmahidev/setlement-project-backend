@@ -100,6 +100,26 @@ class CompanyController extends Controller
             'cms_hero_title' => 'nullable|string|max:255',
             'cms_hero_subtitle' => 'nullable|string|max:255',
             'cms_services' => 'nullable|string',
+            'cms_testimonials' => 'nullable|array',
+            'cms_testimonials.*.name' => 'nullable|string|max:120',
+            'cms_testimonials.*.role' => 'nullable|string|max:120',
+            'cms_testimonials.*.message' => 'nullable|string|max:1000',
+            'cms_testimonials.*.rating' => 'nullable|integer|min:1|max:5',
+            'cms_images' => 'nullable|array',
+            'gallery_image_1' => 'nullable|string',
+            'gallery_image_2' => 'nullable|string',
+            'gallery_image_3' => 'nullable|string',
+            'gallery_image_4' => 'nullable|string',
+            'landing_slide_1' => 'nullable|string',
+            'landing_slide_2' => 'nullable|string',
+            'landing_slide_3' => 'nullable|string',
+            'landing_feature_image' => 'nullable|string',
+            'landing_service_image_1' => 'nullable|string',
+            'landing_service_image_2' => 'nullable|string',
+            'landing_service_image_3' => 'nullable|string',
+            'landing_contact_image_1' => 'nullable|string',
+            'landing_contact_image_2' => 'nullable|string',
+            'landing_form_image' => 'nullable|string',
             'address' => 'nullable|string',
             'city' => 'nullable|string|max:100',
             'district' => 'nullable|string|max:100',
@@ -143,6 +163,43 @@ class CompanyController extends Controller
         }
         if (!empty($data['banner_path'])) {
             $data['banner_path'] = $this->processImageData($data['banner_path'], 'banner_' . $company->id, 'banners');
+        }
+        for ($i = 1; $i <= 4; $i++) {
+            $key = 'gallery_image_' . $i;
+            if (!empty($data[$key])) {
+                $data[$key] = $this->processImageData($data[$key], 'gallery_' . $company->id . '_' . $i, 'gallery');
+            }
+        }
+
+        $landingImages = [
+            'landing_slide_1' => 'slide_1',
+            'landing_slide_2' => 'slide_2',
+            'landing_slide_3' => 'slide_3',
+            'landing_feature_image' => 'feature',
+            'landing_service_image_1' => 'service_1',
+            'landing_service_image_2' => 'service_2',
+            'landing_service_image_3' => 'service_3',
+            'landing_contact_image_1' => 'contact_1',
+            'landing_contact_image_2' => 'contact_2',
+            'landing_form_image' => 'form',
+        ];
+        foreach ($landingImages as $key => $suffix) {
+            if (!empty($data[$key])) {
+                $data[$key] = $this->processImageData($data[$key], 'landing_' . $company->id . '_' . $suffix, 'landing');
+            }
+        }
+
+        if (!empty($data['cms_images']) && is_array($data['cms_images'])) {
+            foreach ($data['cms_images'] as $key => $value) {
+                if (is_string($value) && str_starts_with($value, 'data:image/')) {
+                    $safeKey = preg_replace('/[^a-zA-Z0-9_]/', '_', (string) $key);
+                    $data['cms_images'][$key] = $this->processImageData(
+                        $value,
+                        'cms_' . $company->id . '_' . $safeKey,
+                        'website'
+                    );
+                }
+            }
         }
 
         $company->update($data);
@@ -224,6 +281,22 @@ class CompanyController extends Controller
             'cms_hero_title' => $company->cms_hero_title,
             'cms_hero_subtitle' => $company->cms_hero_subtitle,
             'cms_services' => $company->cms_services,
+            'cms_testimonials' => $company->cms_testimonials ?: [],
+            'gallery_image_1' => $company->gallery_image_1,
+            'gallery_image_2' => $company->gallery_image_2,
+            'gallery_image_3' => $company->gallery_image_3,
+            'gallery_image_4' => $company->gallery_image_4,
+            'landing_slide_1' => $company->landing_slide_1,
+            'landing_slide_2' => $company->landing_slide_2,
+            'landing_slide_3' => $company->landing_slide_3,
+            'landing_feature_image' => $company->landing_feature_image,
+            'landing_service_image_1' => $company->landing_service_image_1,
+            'landing_service_image_2' => $company->landing_service_image_2,
+            'landing_service_image_3' => $company->landing_service_image_3,
+            'landing_contact_image_1' => $company->landing_contact_image_1,
+            'landing_contact_image_2' => $company->landing_contact_image_2,
+            'landing_form_image' => $company->landing_form_image,
+            'cms_images' => (object) ($company->cms_images ?: []),
             'address' => $company->address,
             'city' => $company->city,
             'district' => $company->district,
@@ -292,6 +365,14 @@ class CompanyController extends Controller
                 $frontendDir = base_path('../frontend/public/' . $folder);
                 if (is_dir($frontendDir)) {
                     @copy($targetDir . '/' . $filename, $frontendDir . '/' . $filename);
+                }
+                $distRoot = base_path('../frontend/dist');
+                if (is_dir($distRoot)) {
+                    $distDir = $distRoot . '/' . $folder;
+                    if (!is_dir($distDir)) {
+                        @mkdir($distDir, 0755, true);
+                    }
+                    @copy($targetDir . '/' . $filename, $distDir . '/' . $filename);
                 }
                 return '/' . $folder . '/' . $filename;
             }

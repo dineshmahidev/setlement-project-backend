@@ -79,59 +79,31 @@ class User extends Authenticatable
 
     public function hasPermission(string $permission): bool
     {
-        // Super admin / Master admin has all permissions
+        // Super admin / Master admin always has every permission.
         if ($this->isSuperAdmin()) {
             return true;
         }
 
-        // Admin role: can access settlement, inventory, and user management (plus operations like items, vendors, vehicles, debit notes, reports)
-        if ($this->isAdmin()) {
-            $forbiddenForAdmin = [
-                'super_admin',
-                'branches.manage',
-                'branches.create',
-                'branches.delete',
-                'companies.manage',
-                'companies.create',
-                'companies.delete',
-                'settings.manage',
-                'settings.edit',
-                'audit.view',
-                'cms.manage',
-            ];
-            if (in_array($permission, $forbiddenForAdmin, true)) {
-                return false;
-            }
-
-            return true;
-        }
-
-        // Branch Manager & Staff: only access to inventory section
-        if ($this->isBranchManager() || $this->isStaff()) {
-            if (str_starts_with($permission, 'inventory.') || in_array($permission, [
-                'items.view', 'items.create', 'items.edit',
-                'products.view', 'products.create', 'products.edit',
-                'vehicle.view', 'vehicles.view', 'vehicles.create', 'vehicles.edit',
-                'dashboard.view', 'reports.view',
-            ], true)) {
-                return true;
-            }
-
-            return false;
-        }
-
-        // Check user specific permissions
+        // User-specific grant/deny overrides the role.
         $userPerm = $this->permissions()->where('name', $permission)->first();
         if ($userPerm) {
             return (bool) $userPerm->pivot->granted;
         }
 
-        // Check role permissions
-        if ($this->role) {
-            return $this->role->permissions()->where('name', $permission)->exists();
+        if (! $this->role) {
+            return false;
         }
 
-        return false;
+        $rolePermissions = $this->role->permissions()->pluck('name');
+
+        if ($rolePermissions->contains('*') || $rolePermissions->contains($permission)) {
+            return true;
+        }
+
+        // A module "manage" permission grants every action inside that module.
+        $group = str_contains($permission, '.') ? explode('.', $permission, 2)[0] : $permission;
+
+        return $rolePermissions->contains($group.'.manage') || $rolePermissions->contains($group.'.*');
     }
 
     public function isSuperAdmin(): bool
@@ -194,8 +166,8 @@ class User extends Authenticatable
     }
 
     /**
-     * null  => unrestricted (super admin, no company selected)
-     * array => explicitly allowed company ids
+     * null  => unrestricted (super admin only)
+     * array => explicitly allowed company ids (empty for unassigned non-super users)
      */
     public function allowedCompanyIds(): ?array
     {
@@ -217,7 +189,8 @@ class User extends Authenticatable
             $ids = [$this->defaultBranch->company_id];
         }
 
-        return ! empty($ids) ? $ids : null;
+        // Non-super users without any assignment must not be treated as unrestricted.
+        return array_values(array_unique(array_map('intval', $ids)));
     }
 
     /**

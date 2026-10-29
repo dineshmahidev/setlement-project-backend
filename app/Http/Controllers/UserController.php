@@ -125,6 +125,11 @@ class UserController extends Controller
             $request->merge(['company_ids' => \App\Models\Company::pluck('id')->all()]);
         }
 
+        // Normal admin may only assign companies/godowns inside their own scope
+        if (! $isSuper) {
+            $this->guardAssignableScope($request, $branchIds, $defaultBranchId);
+        }
+
         // Ensure default branch is in accessible branches list
         if ($defaultBranchId && ! in_array($defaultBranchId, array_map('intval', $branchIds), true)) {
             $branchIds[] = $defaultBranchId;
@@ -133,6 +138,14 @@ class UserController extends Controller
         // If no default branch is provided but branches are chosen, use first branch
         if (! $defaultBranchId && ! empty($branchIds)) {
             $defaultBranchId = (int) $branchIds[0];
+        }
+
+        $finalCompanyIds = $this->companyIdsFor($request, new User(), $branchIds, $defaultBranchId);
+        if (! $isSuper && empty($finalCompanyIds)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Select at least one company for this user.',
+            ], 422);
         }
 
         $userData = $request->only(['name', 'email', 'employee_id', 'mobile', 'role_id', 'status']);
@@ -148,7 +161,6 @@ class UserController extends Controller
         }
 
         // Sync companies
-        $finalCompanyIds = $this->companyIdsFor($request, $user);
         $user->companies()->sync($finalCompanyIds);
 
         AuditLog::logAction('created', 'User', $user->id, $user->email, null, $user->toArray(), 'User created');
@@ -201,9 +213,21 @@ class UserController extends Controller
             }
         }
 
+        // Normal admin can only modify users inside their company scope
+        $this->guardUserVisibility($user);
+
         $old = $user->toArray();
-        $branchIds = (array) ($request->branch_ids ?? $user->branches()->pluck('branches.id')->all());
-        $defaultBranchId = $request->filled('default_branch_id') ? (int) $request->default_branch_id : $user->default_branch_id;
+
+        $hasBranchPayload = $request->exists('branch_ids');
+        $branchIds = $hasBranchPayload
+            ? (array) $request->input('branch_ids', [])
+            : $user->branches()->pluck('branches.id')->all();
+
+        $hasDefaultPayload = $request->exists('default_branch_id');
+        $rawDefaultBranchId = $request->input('default_branch_id');
+        $defaultBranchId = $hasDefaultPayload
+            ? (($rawDefaultBranchId === null || $rawDefaultBranchId === '') ? null : (int) $rawDefaultBranchId)
+            : $user->default_branch_id;
 
         // Super Admin can assign ALL branches or ALL companies to any user
         if ($isSuper && ($request->boolean('all_branches') || in_array('all', $branchIds, true))) {
@@ -213,11 +237,24 @@ class UserController extends Controller
             $request->merge(['company_ids' => \App\Models\Company::pluck('id')->all()]);
         }
 
+        // Normal admin may only assign companies/godowns inside their own scope
+        if (! $isSuper) {
+            $this->guardAssignableScope($request, $branchIds, $defaultBranchId);
+        }
+
+        // If branch list changed without an explicit default, keep the old default only when still allowed.
+        if ($hasBranchPayload && ! $hasDefaultPayload) {
+            $normalizedBranchIds = array_map('intval', $branchIds);
+            $defaultBranchId = $user->default_branch_id && in_array((int) $user->default_branch_id, $normalizedBranchIds, true)
+                ? (int) $user->default_branch_id
+                : (empty($normalizedBranchIds) ? null : (int) $normalizedBranchIds[0]);
+        }
+
         if ($defaultBranchId && ! in_array($defaultBranchId, array_map('intval', $branchIds), true)) {
             $branchIds[] = $defaultBranchId;
         }
 
-        if (! $defaultBranchId && ! empty($branchIds)) {
+        if (! $defaultBranchId && ! empty($branchIds) && ! $hasDefaultPayload) {
             $defaultBranchId = (int) $branchIds[0];
         }
 
@@ -237,7 +274,7 @@ class UserController extends Controller
         $user->branches()->sync(array_values(array_unique(array_map('intval', $branchIds))));
 
         // Sync companies
-        $finalCompanyIds = $this->companyIdsFor($request, $user);
+        $finalCompanyIds = $this->companyIdsFor($request, $user, $branchIds, $defaultBranchId);
         $user->companies()->sync($finalCompanyIds);
 
         AuditLog::logAction('updated', 'User', $user->id, $user->email, $old, $user->toArray(), 'User updated');
@@ -252,36 +289,37 @@ class UserController extends Controller
     public function destroy(User $user)
     {
         if ($user->id === auth()->id()) {
-            return response()->json(['success' => false, 'message' => 'You cannot delete yourself.'], 422);
+            return response()->json(['success' => false, 'message' => 'You cannot deactivate yourself.'], 422);
         }
 
-        // Non-superadmin cannot delete a Super Admin user
+        // Non-superadmin cannot deactivate a Super Admin user
         if (! auth()->user()?->isSuperAdmin() && $user->isSuperAdmin()) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized: Cannot delete a Super Admin user.'], 403);
+            return response()->json(['success' => false, 'message' => 'Unauthorized: Cannot deactivate a Super Admin user.'], 403);
         }
 
         $this->guardUserVisibility($user);
 
         $old = $user->toArray();
-        $user->delete();
+        $user->update(['status' => 'inactive']);
+        $user->tokens()->delete();
 
-        AuditLog::logAction('deleted', 'User', $user->id, $user->email, $old, null, 'User deleted');
+        AuditLog::logAction('deactivated', 'User', $user->id, $user->email, $old, $user->toArray(), 'User deactivated');
 
         return response()->json([
             'success' => true,
-            'message' => 'User deleted successfully',
+            'message' => 'User deactivated successfully',
         ]);
     }
 
     /**
      * Company ids a user should belong to after a create/update.
      */
-    private function companyIdsFor(Request $request, User $user): array
+    private function companyIdsFor(Request $request, User $user, array $branchIds = [], ?int $defaultBranchId = null): array
     {
         $companyIds = [];
 
-        if ($request->filled('company_ids')) {
-            $companyIds = array_merge($companyIds, array_map('intval', (array) $request->company_ids));
+        if ($request->exists('company_ids')) {
+            $companyIds = array_merge($companyIds, array_map('intval', (array) $request->input('company_ids', [])));
         }
 
         if ($request->filled('company_id')) {
@@ -289,32 +327,74 @@ class UserController extends Controller
         }
 
         // Branch-derived companies
-        $branchIds = (array) ($request->branch_ids ?? []);
-        if ($request->filled('default_branch_id')) {
-            $branchIds[] = (int) $request->default_branch_id;
-        }
-        if (empty($branchIds) && $user->exists) {
-            $branchIds = $user->branches()->pluck('branches.id')->all();
-        }
-
         if (! empty($branchIds)) {
             $fromBranches = Branch::whereIn('id', $branchIds)
                 ->pluck('company_id')
                 ->filter()
                 ->all();
             $companyIds = array_merge($companyIds, $fromBranches);
+        } elseif ($defaultBranchId) {
+            $fromDefault = Branch::whereKey($defaultBranchId)->value('company_id');
+            if ($fromDefault) {
+                $companyIds[] = (int) $fromDefault;
+            }
         }
 
-        // Active company fallback
-        if (empty($companyIds) && $this->activeCompanyId()) {
+        $hasExplicitCompanyPayload = $request->exists('company_ids') || $request->filled('company_id');
+
+        // Active company fallback only when the caller did not send explicit company data
+        if (empty($companyIds) && ! $hasExplicitCompanyPayload && $this->activeCompanyId()) {
             $companyIds[] = (int) $this->activeCompanyId();
         }
 
-        if (empty($companyIds) && $user->defaultBranch?->company_id) {
+        if (empty($companyIds) && ! $hasExplicitCompanyPayload && $user->defaultBranch?->company_id) {
             $companyIds[] = (int) $user->defaultBranch->company_id;
         }
 
         return array_values(array_unique(array_filter(array_map('intval', $companyIds))));
+    }
+
+    /**
+     * Normal admins may only assign companies and godowns inside their own scope.
+     */
+    private function guardAssignableScope(Request $request, array $branchIds, ?int $defaultBranchId): void
+    {
+        $actor = $request->user();
+
+        if (! $actor || $actor->isSuperAdmin()) {
+            return;
+        }
+
+        $allowedCompanies = array_map('intval', $actor->allowedCompanyIds() ?? []);
+        $allowedBranches = array_map('intval', $actor->allowedBranchIds() ?? []);
+
+        $requestedCompanyIds = array_map('intval', (array) $request->input('company_ids', []));
+        if ($request->filled('company_id')) {
+            $requestedCompanyIds[] = (int) $request->company_id;
+        }
+
+        $normalizedBranchIds = array_values(array_unique(array_filter(array_map('intval', $branchIds))));
+
+        if (! empty($normalizedBranchIds)) {
+            $requestedCompanyIds = array_merge(
+                $requestedCompanyIds,
+                Branch::whereIn('id', $normalizedBranchIds)->pluck('company_id')->filter()->all()
+            );
+        }
+
+        $requestedCompanyIds = array_values(array_unique(array_filter($requestedCompanyIds)));
+
+        if (! empty(array_diff($requestedCompanyIds, $allowedCompanies))) {
+            abort(403, 'You can only assign companies you have access to.');
+        }
+
+        if (! empty(array_diff($normalizedBranchIds, $allowedBranches))) {
+            abort(403, 'You can only assign godowns you have access to.');
+        }
+
+        if ($defaultBranchId !== null && ! in_array($defaultBranchId, $allowedBranches, true)) {
+            abort(403, 'You cannot assign this default godown.');
+        }
     }
 
     private function guardUserVisibility(User $user): void

@@ -37,4 +37,21 @@ class RoleController extends Controller
             ],
         ]);
     }
+
+    public function update(Request $request, Role $role)
+    {
+        $data = $request->validate([
+            'permissions' => 'present|array',
+            'permissions.*' => 'string|exists:permissions,name',
+        ]);
+
+        $permissionIds = Permission::whereIn('name', $data['permissions'])->pluck('id');
+        $role->permissions()->sync($permissionIds);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Role permissions updated',
+            'data' => $role->load('permissions'),
+        ]);
+    }
 }
