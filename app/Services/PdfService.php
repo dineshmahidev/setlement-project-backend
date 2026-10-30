@@ -81,6 +81,9 @@ class PdfService
             ? (float)$settlement->rebate_amount
             : ($calculatedRebate > 0 ? $calculatedRebate : (float)($debitNote ? $debitNote->taxable_amount : 0));
 
+        // Hide the Debit/Credit Note section entirely when there is no actual note (zero amount & no saved note)
+        $showNote = ($rebateAmount > 0) || ($debitNote && (float) $debitNote->taxable_amount > 0);
+
         // 3. Synchronize existing debitNote in database if transaction_type or number is mismatched
         if ($debitNote) {
             $dnUpdates = [];
@@ -152,17 +155,16 @@ class PdfService
         $rebateTotal = round($rebateAmount + $rebateCgst + $rebateSgst + $rebateIgst, 2);
 
         $rawRemarks = $debitNote?->remarks ?: $settlement->remarks;
-        if ($noteType === 'credit') {
-            if (empty($rawRemarks) || stripos($rawRemarks, 'debit') !== false) {
-                $finalRemarks = 'Auto-generated Credit Note posted to vendor ledger';
+        $finalRemarks = $rawRemarks;
+        if ($showNote) {
+            if ($noteType === 'credit') {
+                if (empty($rawRemarks) || stripos($rawRemarks, 'debit') !== false) {
+                    $finalRemarks = 'Auto-generated Credit Note posted to vendor ledger';
+                }
             } else {
-                $finalRemarks = $rawRemarks;
-            }
-        } else {
-            if (empty($rawRemarks) || stripos($rawRemarks, 'credit') !== false) {
-                $finalRemarks = 'Auto-generated Debit Note posted to vendor ledger';
-            } else {
-                $finalRemarks = $rawRemarks;
+                if (empty($rawRemarks) || stripos($rawRemarks, 'credit') !== false) {
+                    $finalRemarks = 'Auto-generated Debit Note posted to vendor ledger';
+                }
             }
         }
 
@@ -196,6 +198,7 @@ class PdfService
             'company' => $company,
             'debitNote' => $debitNote,
             'debitNoteData' => $debitNoteData,
+            'showNote' => $showNote,
         ])
         ->setPaper('a4', 'portrait')
         ->setOption([
