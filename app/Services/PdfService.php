@@ -91,9 +91,13 @@ class PdfService
                 $dnUpdates['transaction_type'] = $noteType;
             }
             if ($noteType === 'credit' && str_starts_with($debitNote->debit_note_number, 'DN/')) {
-                $dnUpdates['debit_note_number'] = 'CN/' . substr($debitNote->debit_note_number, 3);
+                $dnUpdates['debit_note_number'] = \App\Models\DocumentSequence::convertNoteNumber(
+                    $debitNote->debit_note_number, 'CN', $settlement->branch_id, $settlement->settlement_date
+                );
             } elseif ($noteType === 'debit' && str_starts_with($debitNote->debit_note_number, 'CN/')) {
-                $dnUpdates['debit_note_number'] = 'DN/' . substr($debitNote->debit_note_number, 3);
+                $dnUpdates['debit_note_number'] = \App\Models\DocumentSequence::convertNoteNumber(
+                    $debitNote->debit_note_number, 'DN', $settlement->branch_id, $settlement->settlement_date
+                );
             }
             if ($rebateAmount > 0 && abs((float)$debitNote->taxable_amount - $rebateAmount) > 0.01) {
                 $dnUpdates['taxable_amount'] = $rebateAmount;

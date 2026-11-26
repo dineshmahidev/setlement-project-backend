@@ -92,7 +92,10 @@ class DocumentSequence extends Model
                     $candidate = "{$prefix}/{$year}/{$branchCode}/{$formattedNum}";
                 }
                 return $candidate;
-            } elseif ($documentType === 'debit_note') {
+            } elseif ($documentType === 'debit_note' || $documentType === 'credit_note') {
+                // Sequence counters are per branch, but debit_notes.debit_note_number is
+                // globally unique, so a branch's first note can collide with another
+                // branch's (or with a DN->CN rename). Skip taken numbers.
                 $candidate = "{$prefix}/{$formattedNum}/{$fy}";
                 while (DB::table('debit_notes')->where('debit_note_number', $candidate)->exists()) {
                     $seq->increment('current_number');
@@ -112,5 +115,25 @@ class DocumentSequence extends Model
 
             return "{$prefix}/{$formattedNum}/{$fy}";
         });
+    }
+
+    /**
+     * Flip a note number between DN/ and CN/ prefixes without ever creating a
+     * duplicate (falls back to the next free sequence number when the target
+     * number is already taken).
+     */
+    public static function convertNoteNumber(string $number, string $toPrefix, ?int $branchId = null, ?string $date = null): string
+    {
+        $from = $toPrefix === 'CN' ? 'DN/' : 'CN/';
+        if (! str_starts_with($number, $from)) {
+            return $number;
+        }
+
+        $candidate = $toPrefix . '/' . substr($number, 3);
+        $taken = DB::table('debit_notes')->where('debit_note_number', $candidate)->exists();
+
+        return $taken
+            ? self::getNextNumber($toPrefix === 'CN' ? 'credit_note' : 'debit_note', $branchId, $date)
+            : $candidate;
     }
 }

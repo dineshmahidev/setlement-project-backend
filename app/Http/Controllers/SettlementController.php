@@ -364,12 +364,12 @@ class SettlementController extends Controller
             $correctType = ($diff < -0.001) ? 'credit' : 'debit';
             $dn = $settlement->debitNotes->first();
             if ($dn && ($dn->transaction_type !== $correctType || ($correctType === 'credit' && str_starts_with($dn->debit_note_number, 'DN/')))) {
-                $newNumber = $dn->debit_note_number;
-                if ($correctType === 'credit' && str_starts_with($newNumber, 'DN/')) {
-                    $newNumber = 'CN/' . substr($newNumber, 3);
-                } elseif ($correctType === 'debit' && str_starts_with($newNumber, 'CN/')) {
-                    $newNumber = 'DN/' . substr($newNumber, 3);
-                }
+                $newNumber = DocumentSequence::convertNoteNumber(
+                    $dn->debit_note_number,
+                    $correctType === 'credit' ? 'CN' : 'DN',
+                    $settlement->branch_id,
+                    $settlement->settlement_date
+                );
                 $dn->update([
                     'transaction_type' => $correctType,
                     'debit_note_number' => $newNumber,

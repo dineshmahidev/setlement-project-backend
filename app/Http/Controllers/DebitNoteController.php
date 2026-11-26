@@ -127,7 +127,8 @@ class DebitNoteController extends Controller
             $fy = FinancialYear::getFinancialYearForDate($date);
 
             if (empty($data['debit_note_number'])) {
-                $data['debit_note_number'] = DocumentSequence::getNextNumber('debit_note', $branchId, $date);
+                $docType = (($data['transaction_type'] ?? 'debit') === 'credit') ? 'credit_note' : 'debit_note';
+                $data['debit_note_number'] = DocumentSequence::getNextNumber($docType, $branchId, $date);
             }
 
             $taxable = (float)($data['taxable_amount'] ?? 0);
