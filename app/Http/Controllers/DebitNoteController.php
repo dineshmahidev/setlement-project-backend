@@ -233,6 +233,12 @@ class DebitNoteController extends Controller
         $data = $request->validated();
 
         $debitNote = DB::transaction(function () use ($debitNote, $data, $old) {
+            $originalType = (string) $debitNote->transaction_type;
+            $originalNumber = (string) $debitNote->debit_note_number;
+
+            // Lock the row so concurrent edits cannot double-post the ledger.
+            $debitNote = DebitNote::whereKey($debitNote->getKey())->lockForUpdate()->first() ?? $debitNote;
+
             $taxable = (float)($data['taxable_amount'] ?? $debitNote->taxable_amount);
             $isInterstate = isset($data['is_interstate']) ? (bool)$data['is_interstate'] : $debitNote->is_interstate;
 
@@ -255,6 +261,23 @@ class DebitNoteController extends Controller
             $data['total_amount'] = $total;
             $data['updated_by'] = auth()->id();
 
+            // Keep the DN/CN prefix aligned with the note type. Only rewritten
+            // when it actually disagrees, and an explicitly supplied number
+            // from the client always wins (it is unique-validated already).
+            $newType = $data['transaction_type'] ?? $originalType;
+            if (! array_key_exists('debit_note_number', $data) && $newType !== $originalType) {
+                $desiredPrefix = ($newType === 'credit') ? 'CN' : 'DN';
+                $wrongPrefix = ($desiredPrefix === 'CN') ? 'DN/' : 'CN/';
+                if (str_starts_with($originalNumber, $wrongPrefix)) {
+                    $data['debit_note_number'] = DocumentSequence::convertNoteNumber(
+                        $originalNumber,
+                        $desiredPrefix,
+                        $debitNote->branch_id,
+                        $debitNote->date ? $debitNote->date->toDateString() : null
+                    );
+                }
+            }
+
             $items = $data['items'] ?? null;
             unset($data['items']);
 
@@ -271,6 +294,10 @@ class DebitNoteController extends Controller
                     ]);
                 }
             }
+
+            // Amount / direction / number may all have moved: update the one
+            // existing posting in place instead of appending another row.
+            VendorLedger::syncForNote($debitNote);
 
             AuditLog::logAction('updated', 'DebitNote', $debitNote->id, $debitNote->debit_note_number, $old, $debitNote->toArray(), 'Debit note updated');
 
@@ -342,7 +369,12 @@ class DebitNoteController extends Controller
     public function destroy(DebitNote $debitNote)
     {
         $this->guardDebitNoteCompany($debitNote);
-        $debitNote->delete();
+
+        // Never leave a posting behind for a note that no longer exists.
+        DB::transaction(function () use ($debitNote) {
+            VendorLedger::removeNoteEntries($debitNote);
+            $debitNote->delete();
+        });
         AuditLog::logAction('deleted', 'DebitNote', $debitNote->id, $debitNote->debit_note_number, null, null, 'Debit note moved to trash');
         return response()->json([
             'success' => true,

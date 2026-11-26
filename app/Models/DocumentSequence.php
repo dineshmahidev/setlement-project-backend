@@ -136,4 +136,23 @@ class DocumentSequence extends Model
             ? self::getNextNumber($toPrefix === 'CN' ? 'credit_note' : 'debit_note', $branchId, $date)
             : $candidate;
     }
+
+    /**
+     * Read-only twin of convertNoteNumber(): returns the DN/CN prefixed number
+     * when the target value is still free, otherwise returns the number
+     * unchanged. Never allocates a sequence value and never writes, so it is
+     * safe to call while rendering a document.
+     */
+    public static function previewNoteNumber(string $number, string $toPrefix): string
+    {
+        $from = $toPrefix === 'CN' ? 'DN/' : 'CN/';
+        if (! str_starts_with($number, $from)) {
+            return $number;
+        }
+
+        $candidate = $toPrefix . '/' . substr($number, 3);
+        $taken = DB::table('debit_notes')->where('debit_note_number', $candidate)->exists();
+
+        return $taken ? $number : $candidate;
+    }
 }

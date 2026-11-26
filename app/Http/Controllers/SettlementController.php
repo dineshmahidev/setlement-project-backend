@@ -363,21 +363,33 @@ class SettlementController extends Controller
             $diff = ($origInv > 0) ? (($origInv - $branVal) + $manualAdj) : $manualAdj;
             $correctType = ($diff < -0.001) ? 'credit' : 'debit';
             $dn = $settlement->debitNotes->first();
-            if ($dn && ($dn->transaction_type !== $correctType || ($correctType === 'credit' && str_starts_with($dn->debit_note_number, 'DN/')))) {
-                $newNumber = DocumentSequence::convertNoteNumber(
-                    $dn->debit_note_number,
-                    $correctType === 'credit' ? 'CN' : 'DN',
-                    $settlement->branch_id,
-                    $settlement->settlement_date
-                );
-                $dn->update([
-                    'transaction_type' => $correctType,
-                    'debit_note_number' => $newNumber,
-                    'reason' => ($correctType === 'credit')
-                        ? 'Quality Premium / Price Credit on Oil Content Settlement'
-                        : 'Rebate on Oil Content Settlement',
-                ]);
-                $dn->fill(['transaction_type' => $correctType, 'debit_note_number' => $newNumber]);
+            $prefixMismatch = $dn && str_starts_with(
+                (string) $dn->debit_note_number,
+                $correctType === 'credit' ? 'DN/' : 'CN/'
+            );
+
+            if ($dn && ($dn->transaction_type !== $correctType || $prefixMismatch)) {
+                // Financial write on a read endpoint -> keep it atomic.
+                DB::transaction(function () use ($dn, $correctType, $settlement) {
+                    $newNumber = DocumentSequence::convertNoteNumber(
+                        $dn->debit_note_number,
+                        $correctType === 'credit' ? 'CN' : 'DN',
+                        $settlement->branch_id,
+                        $settlement->settlement_date
+                    );
+                    $dn->update([
+                        'transaction_type' => $correctType,
+                        'debit_note_number' => $newNumber,
+                        'reason' => ($correctType === 'credit')
+                            ? 'Quality Premium / Price Credit on Oil Content Settlement'
+                            : 'Rebate on Oil Content Settlement',
+                    ]);
+                    $dn->fill(['transaction_type' => $correctType, 'debit_note_number' => $newNumber]);
+
+                    // The correction may have flipped type/number, so keep the
+                    // existing ledger posting in step (never adds a second row).
+                    VendorLedger::syncForNote($dn);
+                });
             }
         }
 
@@ -472,17 +484,22 @@ class SettlementController extends Controller
             // Sync Debit/Credit note on update
             $noteAmount = $calc['rebate_amount'] ?? ($calc['note_amount'] ?? 0);
             $noteType = $calc['note_type'] ?? 'debit';
-            $existingNote = DebitNote::where('settlement_id', $settlement->id)->first();
+            $existingNote = DebitNote::where('settlement_id', $settlement->id)
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->first();
+
+            $ledgerDescription = (($noteType === 'credit') ? 'Credit Note against Bill #' : 'Rebate / Debit Note against Bill #')
+                . ($settlement->bill_number ?? $settlement->settlement_number);
 
             if ($noteAmount > 0) {
-                $docType = ($noteType === 'credit') ? 'credit_note' : 'debit_note';
                 $dnData = $calc['debit_note'];
                 $reason = ($noteType === 'credit')
                     ? 'Quality Premium / Price Credit on Oil Content Settlement'
                     : 'Rebate on Oil Content Settlement';
 
                 if ($existingNote) {
-                    $existingNote->update([
+                    $updates = [
                         'transaction_type' => $noteType,
                         'taxable_amount' => $dnData['taxable_amount'],
                         'cgst_amount' => $dnData['cgst_amount'],
@@ -491,7 +508,20 @@ class SettlementController extends Controller
                         'total_amount' => $dnData['total_amount'],
                         'reason' => $reason,
                         'remarks' => 'Auto generated ' . strtoupper($noteType) . ' Note from Settlement ' . $settlement->settlement_number,
-                    ]);
+                    ];
+
+                    // Rewrite the DN/CN prefix only when it disagrees with the
+                    // note type - never churn an already correct number.
+                    if (str_starts_with((string) $existingNote->debit_note_number, $noteType === 'credit' ? 'DN/' : 'CN/')) {
+                        $updates['debit_note_number'] = DocumentSequence::convertNoteNumber(
+                            $existingNote->debit_note_number,
+                            $noteType === 'credit' ? 'CN' : 'DN',
+                            $settlement->branch_id,
+                            $settlement->settlement_date
+                        );
+                    }
+
+                    $existingNote->update($updates);
 
                     DebitNoteItem::where('debit_note_id', $existingNote->id)->update([
                         'particulars' => ($noteType === 'credit')
@@ -499,11 +529,19 @@ class SettlementController extends Controller
                             : 'Rebate difference between Invoice value and final Settlement bran value',
                         'amount' => $dnData['taxable_amount'],
                     ]);
+
+                    // Reuse the existing ledger row; adjusts amount/direction
+                    // in place and repairs the running balance downstream.
+                    VendorLedger::syncForNote($existingNote, $ledgerDescription);
                 } else {
                     $branchId = $settlement->branch_id;
                     $settlementDate = $settlement->settlement_date;
                     $fy = $settlement->financial_year ?: FinancialYear::getFinancialYearForDate($settlementDate);
-                    $dnNumber = DocumentSequence::getNextNumber($docType, $branchId, $settlementDate);
+                    $dnNumber = DocumentSequence::getNextNumber(
+                        ($noteType === 'credit') ? 'credit_note' : 'debit_note',
+                        $branchId,
+                        $settlementDate
+                    );
 
                     $newNote = DebitNote::create([
                         'debit_note_number' => $dnNumber,
@@ -539,8 +577,13 @@ class SettlementController extends Controller
                             : 'Rebate difference between Invoice value and final Settlement bran value',
                         'amount' => $dnData['taxable_amount'],
                     ]);
+
+                    VendorLedger::syncForNote($newNote, $ledgerDescription);
                 }
             } elseif ($existingNote) {
+                // Note amount went to zero: drop its posting (no orphan ledger
+                // rows) and let the balances behind it be repaired.
+                VendorLedger::removeNoteEntries($existingNote);
                 $existingNote->delete();
             }
 

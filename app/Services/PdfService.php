@@ -6,6 +6,7 @@ use App\Models\Branch;
 use App\Models\Company;
 use App\Models\CompanySetting;
 use App\Models\DebitNote;
+use App\Models\DocumentSequence;
 use App\Models\Settlement;
 use Barryvdh\DomPDF\Facade\Pdf;
 
@@ -84,48 +85,15 @@ class PdfService
         // Hide the Debit/Credit Note section entirely when there is no actual note (zero amount & no saved note)
         $showNote = ($rebateAmount > 0) || ($debitNote && (float) $debitNote->taxable_amount > 0);
 
-        // 3. Synchronize existing debitNote in database if transaction_type or number is mismatched
-        if ($debitNote) {
-            $dnUpdates = [];
-            if ($debitNote->transaction_type !== $noteType) {
-                $dnUpdates['transaction_type'] = $noteType;
-            }
-            if ($noteType === 'credit' && str_starts_with($debitNote->debit_note_number, 'DN/')) {
-                $dnUpdates['debit_note_number'] = \App\Models\DocumentSequence::convertNoteNumber(
-                    $debitNote->debit_note_number, 'CN', $settlement->branch_id, $settlement->settlement_date
-                );
-            } elseif ($noteType === 'debit' && str_starts_with($debitNote->debit_note_number, 'CN/')) {
-                $dnUpdates['debit_note_number'] = \App\Models\DocumentSequence::convertNoteNumber(
-                    $debitNote->debit_note_number, 'DN', $settlement->branch_id, $settlement->settlement_date
-                );
-            }
-            if ($rebateAmount > 0 && abs((float)$debitNote->taxable_amount - $rebateAmount) > 0.01) {
-                $dnUpdates['taxable_amount'] = $rebateAmount;
-                $isInter = (bool)$settlement->is_interstate;
-                $cg = $isInter ? 0 : round(($rebateAmount * 2.5) / 100, 2);
-                $sg = $isInter ? 0 : round(($rebateAmount * 2.5) / 100, 2);
-                $ig = $isInter ? round(($rebateAmount * 5.0) / 100, 2) : 0;
-                $dnUpdates['cgst_amount'] = $cg;
-                $dnUpdates['sgst_amount'] = $sg;
-                $dnUpdates['igst_amount'] = $ig;
-                $dnUpdates['total_amount'] = round($rebateAmount + $cg + $sg + $ig, 2);
-            }
-            if ($noteType === 'credit' && ($debitNote->reason === 'Rebate on Oil Content Settlement' || empty($debitNote->reason))) {
-                $dnUpdates['reason'] = 'Quality Premium / Price Credit on Oil Content Settlement';
-            }
-            if (!empty($dnUpdates)) {
-                $debitNote->update($dnUpdates);
-                $debitNote->fill($dnUpdates);
-            }
-        }
+        // 3. PDF rendering is read-only: derive the note number/type in memory
+        //    instead of writing to the debit note row.
+        $docNumber = $debitNote ? DocumentSequence::previewNoteNumber(
+            (string) $debitNote->debit_note_number,
+            $prefix
+        ) : null;
 
         // 4. Resolve Document Number
-        $docNumber = $debitNote?->debit_note_number;
-        if ($noteType === 'credit' && $docNumber && str_starts_with($docNumber, 'DN/')) {
-            $docNumber = 'CN/' . substr($docNumber, 3);
-        } elseif ($noteType === 'debit' && $docNumber && str_starts_with($docNumber, 'CN/')) {
-            $docNumber = 'DN/' . substr($docNumber, 3);
-        } elseif (!$docNumber) {
+        if (!$docNumber) {
             $cleanNum = preg_replace('/[^0-9]/', '', $settlement->settlement_number ?? '1019') ?: '1019';
             $docNumber = $prefix . '/' . $cleanNum . '/' . ($settlement->financial_year ?? '26-27');
         }
