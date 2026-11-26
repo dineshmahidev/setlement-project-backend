@@ -43,7 +43,7 @@ class PdfService
 
     public function generateSettlementBillPdf(Settlement $settlement)
     {
-        $settlement->load(['branch', 'vendor', 'product', 'invoice', 'qualityTests', 'charges', 'debitNotes.items']);
+        $settlement->load(['branch', 'vendor', 'product', 'invoice', 'qualityTests', 'charges', 'debitNotes.items', 'items.product']);
 
         $company = $this->resolveCompany($settlement->branch_id);
         $company->state_code = $company->state_code ?: substr((string) $company->gstin, 0, 2);

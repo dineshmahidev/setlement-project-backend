@@ -189,6 +189,7 @@ class OutwardController extends Controller
                 if ($outward->status === 'CONFIRMED') {
                     // In-place edit: ledger rows are updated (not duplicated), lots
                     // adjusted by delta, entry stays CONFIRMED.
+                    $oldBranchId = (int) $outward->branch_id;
                     $outward->update($headerData);
                     if ($request->has('items') && is_array($request->items)) {
                         $lines = [];
@@ -206,7 +207,7 @@ class OutwardController extends Controller
                                 'amount' => round($qty * $rate - ((float) ($i['discount'] ?? 0)) + ((float) ($i['additional_charges'] ?? 0)), 2),
                             ];
                         }
-                        $this->ledger->updatePostedOutward($outward, $lines, $userId);
+                        $this->ledger->updatePostedOutward($outward, $lines, $userId, $oldBranchId);
                         $outward->update(['total_amount' => round((float) collect($lines)->sum('amount'), 2)]);
                     }
                     return;

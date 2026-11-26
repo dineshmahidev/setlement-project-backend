@@ -14,9 +14,11 @@ class SettlementRequest extends FormRequest
     public function rules(): array
     {
         $id = $this->route('settlement') ? $this->route('settlement')->id : null;
+        $isMultiple = $this->input('settlement_type') === 'multiple';
 
         return [
             'settlement_number' => ['nullable', 'string', 'max:50', 'unique:settlements,settlement_number,' . $id],
+            'settlement_type' => ['nullable', 'string', 'in:single,multiple'],
             'branch_id' => ['nullable', 'exists:branches,id'],
             'vendor_id' => ['required', 'exists:vendors,id'],
             'product_id' => ['nullable', 'exists:products,id'],
@@ -27,14 +29,14 @@ class SettlementRequest extends FormRequest
             'settlement_date' => ['required', 'date'],
             'vehicle_number' => ['nullable', 'string', 'max:30'],
             
-            // Weight Details
-            'net_weight_mt' => ['required', 'numeric', 'min:0'],
+            // Weight Details - required only for single mode; for multiple, calculated from items
+            'net_weight_mt' => [$isMultiple ? 'nullable' : 'required', 'numeric', 'min:0'],
             'jute_bag' => ['nullable', 'numeric', 'min:0'],
             'pp_bag' => ['nullable', 'numeric', 'min:0'],
             'final_weight_mt' => ['nullable', 'numeric', 'min:0'],
             
             // Quality Test
-            'oil_content' => ['required', 'numeric', 'min:0', 'max:100'],
+            'oil_content' => [$isMultiple ? 'nullable' : 'required', 'numeric', 'min:0', 'max:100'],
             'ffa' => ['nullable'],
             'ss' => ['nullable'],
             'fibre' => ['nullable'],
@@ -45,7 +47,15 @@ class SettlementRequest extends FormRequest
             
             // Rates
             'contract_unit_rate' => ['nullable', 'numeric', 'min:0'],
-            'final_unit_rate' => ['required', 'numeric', 'min:0'],
+            'final_unit_rate' => [$isMultiple ? 'nullable' : 'required', 'numeric', 'min:0'],
+
+            // Multiple items
+            'items' => [$isMultiple ? 'required' : 'nullable', 'array', $isMultiple ? 'min:1' : ''],
+            'items.*.product_id' => ['nullable', 'exists:products,id'],
+            'items.*.lot_number' => ['nullable', 'string', 'max:50'],
+            'items.*.net_weight_mt' => ['required_with:items', 'numeric', 'min:0'],
+            'items.*.oil_content' => ['required_with:items', 'numeric', 'min:0', 'max:100'],
+            'items.*.final_unit_rate' => ['required_with:items', 'numeric', 'min:0'],
             
             // Charges
             'bag_amount' => ['nullable', 'numeric', 'min:0'],

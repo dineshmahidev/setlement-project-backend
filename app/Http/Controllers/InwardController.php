@@ -155,6 +155,7 @@ class InwardController extends Controller
                 if ($inward->status === 'CONFIRMED') {
                     // In-place edit: ledger rows are updated (not duplicated), lots
                     // adjusted by delta, entry stays CONFIRMED.
+                    $oldBranchId = (int) $inward->branch_id;
                     $inward->update($headerData);
                     if ($request->has('items') && is_array($request->items)) {
                         $lines = [];
@@ -173,7 +174,7 @@ class InwardController extends Controller
                                 'notes' => $i['notes'] ?? null,
                             ];
                         }
-                        $this->ledger->updatePostedInward($inward, $lines, $userId);
+                        $this->ledger->updatePostedInward($inward, $lines, $userId, $oldBranchId);
                         $inward->update(['total_amount' => round((float) collect($lines)->sum('amount'), 2)]);
                     }
                     return;

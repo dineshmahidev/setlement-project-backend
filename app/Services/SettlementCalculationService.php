@@ -19,42 +19,119 @@ class SettlementCalculationService
             $roundingMode = Company::current()?->rounding_mode ?? 'nearest_rupee';
         }
 
-        // 1. Final Weight in MT & KG
-        $netWeightMt = (float)($data['net_weight_mt'] ?? 0);
-        $juteBag = (float)($data['jute_bag'] ?? 0);
-        $ppBag = (float)($data['pp_bag'] ?? 0);
-        
-        // If final_weight_mt is not explicitly provided, calculate: net_weight_mt - deductions or use net_weight_mt
-        $finalWeightMt = isset($data['final_weight_mt']) && (float)$data['final_weight_mt'] > 0
-            ? (float)$data['final_weight_mt']
-            : $netWeightMt;
+        $settlementType = $data['settlement_type'] ?? 'single';
+        $items = $data['items'] ?? [];
 
-        // Final Weight (KG) = Final Weight (MT) × 1000
-        $finalWeightKg = $finalWeightMt * 1000.0;
+        // If multiple items provided, calculate per-item values and aggregate
+        $calculatedItems = [];
+        if ($settlementType === 'multiple' && !empty($items) && is_array($items)) {
+            $sumNetWeightMt = 0.0;
+            $sumJuteBag = 0.0;
+            $sumPpBag = 0.0;
+            $sumFinalWeightMt = 0.0;
+            $sumFinalWeightKg = 0.0;
+            $sumOilQuantityKg = 0.0;
+            $sumBranValue = 0.0;
+            $sumBagAmount = 0.0;
 
-        // 2. Oil Content (%) & Rates
-        $oilContent = (float)($data['oil_content'] ?? 0);
-        $contractUnitRate = (float)($data['contract_unit_rate'] ?? 0);
-        $finalUnitRate = isset($data['final_unit_rate']) && (float)$data['final_unit_rate'] > 0 
-            ? (float)$data['final_unit_rate'] 
-            : $contractUnitRate;
+            foreach ($items as $idx => $it) {
+                $itemNetMt = (float)($it['net_weight_mt'] ?? 0);
+                $itemJute = (float)($it['jute_bag'] ?? 0);
+                $itemPp = (float)($it['pp_bag'] ?? 0);
+                $itemFinalMt = isset($it['final_weight_mt']) && (float)$it['final_weight_mt'] > 0
+                    ? (float)$it['final_weight_mt']
+                    : $itemNetMt;
+                $itemFinalKg = $itemFinalMt * 1000.0;
 
-        // Rate basis: 'per_10kg', 'per_kg', 'per_mt', 'per_quintal'
-        $rateBasis = $data['rate_basis'] ?? null;
-        if (!$rateBasis) {
-            $rateBasis = ($finalUnitRate >= 500) ? 'per_10kg' : 'per_kg';
+                $itemOilPct = (float)($it['oil_content'] ?? 0);
+                $itemContractRate = (float)($it['contract_unit_rate'] ?? 0);
+                $itemFinalRate = isset($it['final_unit_rate']) && (float)$it['final_unit_rate'] > 0
+                    ? (float)$it['final_unit_rate']
+                    : $itemContractRate;
+
+                $itemOilQtyKg = ($itemFinalKg * $itemOilPct) / 100.0;
+                $itemRawBranVal = $itemFinalMt * $itemFinalRate * $itemOilPct;
+                $itemBranVal = $this->applyRounding($itemRawBranVal, $roundingMode);
+                $itemBagAmt = (float)($it['bag_amount'] ?? 0);
+
+                $calculatedItems[] = [
+                    'product_id' => $it['product_id'] ?? null,
+                    'lot_number' => $it['lot_number'] ?? null,
+                    'net_weight_mt' => round($itemNetMt, 3),
+                    'jute_bag' => round($itemJute, 3),
+                    'pp_bag' => round($itemPp, 3),
+                    'final_weight_mt' => round($itemFinalMt, 3),
+                    'final_weight_kg' => round($itemFinalKg, 3),
+                    'oil_content' => round($itemOilPct, 3),
+                    'ffa' => $it['ffa'] ?? 'PASS',
+                    'ss' => $it['ss'] ?? 'PASS',
+                    'fibre' => $it['fibre'] ?? 'PASS',
+                    'moisture' => $it['moisture'] ?? 'PASS',
+                    'contract_unit_rate' => $itemContractRate,
+                    'final_unit_rate' => $itemFinalRate,
+                    'oil_quantity_kg' => round($itemOilQtyKg, 3),
+                    'bran_value' => $itemBranVal,
+                    'bag_amount' => $itemBagAmt,
+                    'remarks' => $it['remarks'] ?? null,
+                    'sort_order' => $idx + 1,
+                ];
+
+                $sumNetWeightMt += $itemNetMt;
+                $sumJuteBag += $itemJute;
+                $sumPpBag += $itemPp;
+                $sumFinalWeightMt += $itemFinalMt;
+                $sumFinalWeightKg += $itemFinalKg;
+                $sumOilQuantityKg += $itemOilQtyKg;
+                $sumBranValue += $itemBranVal;
+                $sumBagAmount += $itemBagAmt;
+            }
+
+            $finalWeightMt = $sumFinalWeightMt;
+            $finalWeightKg = $sumFinalWeightKg;
+            $oilQuantityKg = $sumOilQuantityKg;
+            $rawBranValue = $sumBranValue;
+            $branValue = $sumBranValue;
+            $bagAmount = $sumBagAmount;
+            $oilContent = $sumFinalWeightMt > 0 ? ($sumOilQuantityKg / ($sumFinalWeightMt * 10)) : 0;
+            $contractUnitRate = (float)($data['contract_unit_rate'] ?? 0);
+            $finalUnitRate = (float)($data['final_unit_rate'] ?? 0);
+        } else {
+            // 1. Final Weight in MT & KG
+            $netWeightMt = (float)($data['net_weight_mt'] ?? 0);
+            $juteBag = (float)($data['jute_bag'] ?? 0);
+            $ppBag = (float)($data['pp_bag'] ?? 0);
+            
+            // If final_weight_mt is not explicitly provided, calculate: net_weight_mt - deductions or use net_weight_mt
+            $finalWeightMt = isset($data['final_weight_mt']) && (float)$data['final_weight_mt'] > 0
+                ? (float)$data['final_weight_mt']
+                : $netWeightMt;
+
+            // Final Weight (KG) = Final Weight (MT) × 1000
+            $finalWeightKg = $finalWeightMt * 1000.0;
+
+            // 2. Oil Content (%) & Rates
+            $oilContent = (float)($data['oil_content'] ?? 0);
+            $contractUnitRate = (float)($data['contract_unit_rate'] ?? 0);
+            $finalUnitRate = isset($data['final_unit_rate']) && (float)$data['final_unit_rate'] > 0 
+                ? (float)$data['final_unit_rate'] 
+                : $contractUnitRate;
+
+            // Rate basis: 'per_10kg', 'per_kg', 'per_mt', 'per_quintal'
+            $rateBasis = $data['rate_basis'] ?? null;
+            if (!$rateBasis) {
+                $rateBasis = ($finalUnitRate >= 500) ? 'per_10kg' : 'per_kg';
+            }
+
+            // 3. EXACT OIL & BRAN VALUE CALCULATION
+            // Oil Quantity (KG) = Final Weight (KG) × Oil Content / 100
+            $oilQuantityKg = ($finalWeightKg * $oilContent) / 100.0;
+
+            // Formula: Final Weight (MT) × Final Unit Rate × Oil Content
+            $rawBranValue = $finalWeightMt * $finalUnitRate * $oilContent;
+            $branValue = $this->applyRounding($rawBranValue, $roundingMode);
+
+            $bagAmount = (float)($data['bag_amount'] ?? 0);
         }
-
-        // 3. EXACT OIL & BRAN VALUE CALCULATION
-        // Oil Quantity (KG) = Final Weight (KG) × Oil Content / 100
-        $oilQuantityKg = ($finalWeightKg * $oilContent) / 100.0;
-
-        // Formula: Final Weight (MT) × Final Unit Rate × Oil Content
-        $rawBranValue = $finalWeightMt * $finalUnitRate * $oilContent;
-        $branValue = $this->applyRounding($rawBranValue, $roundingMode);
-
-        // 4. Charges & Deductions
-        $bagAmount = (float)($data['bag_amount'] ?? 0);
         $loadingCharges = (float)($data['loading_charges'] ?? 0);
         $unloadingCharges = (float)($data['unloading_charges'] ?? 0);
         $tdsRate = (float)($data['tds_rate'] ?? 0);
@@ -155,6 +232,8 @@ class SettlementCalculationService
         }
 
         return [
+            'settlement_type' => $settlementType,
+            'items' => $calculatedItems,
             'final_weight_mt' => round($finalWeightMt, 3),
             'final_weight_kg' => round($finalWeightKg, 3),
             'oil_quantity_kg' => round($oilQuantityKg, 3),

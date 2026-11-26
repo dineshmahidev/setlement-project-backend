@@ -72,7 +72,7 @@ class SettlementController extends Controller
     {
         $this->authorizeSettlementAccess($request);
         $companyId = $this->activeCompanyId();
-        $query = Settlement::with(['branch.company', 'vendor', 'product', 'invoice', 'debitNotes', 'creator']);
+        $query = Settlement::with(['branch.company', 'vendor', 'product', 'invoice', 'debitNotes', 'creator', 'items.product']);
 
         if (! $request->filled('vendor_id')) {
             $query->whereHas('vendor', function ($vq) {
@@ -189,6 +189,7 @@ class SettlementController extends Controller
             // 3. Assemble full settlement model payload
             $modelData = array_merge($validated, [
                 'settlement_number' => $settlementNumber,
+                'settlement_type' => $validated['settlement_type'] ?? ($calc['settlement_type'] ?? 'single'),
                 'financial_year' => $fy,
                 'final_weight_mt' => $calc['final_weight_mt'],
                 'final_weight_kg' => $calc['final_weight_kg'],
@@ -219,6 +220,34 @@ class SettlementController extends Controller
             ]);
 
             $settlement = Settlement::create($modelData);
+
+            // 3.1 Save Settlement Items if multiple
+            if (($modelData['settlement_type'] ?? 'single') === 'multiple' && !empty($calc['items'])) {
+                foreach ($calc['items'] as $it) {
+                    \App\Models\SettlementItem::create([
+                        'settlement_id' => $settlement->id,
+                        'product_id' => $it['product_id'] ?? null,
+                        'lot_number' => $it['lot_number'] ?? null,
+                        'net_weight_mt' => $it['net_weight_mt'],
+                        'jute_bag' => $it['jute_bag'],
+                        'pp_bag' => $it['pp_bag'],
+                        'final_weight_mt' => $it['final_weight_mt'],
+                        'final_weight_kg' => $it['final_weight_kg'],
+                        'oil_content' => $it['oil_content'],
+                        'ffa' => $it['ffa'],
+                        'ss' => $it['ss'],
+                        'fibre' => $it['fibre'],
+                        'moisture' => $it['moisture'],
+                        'contract_unit_rate' => $it['contract_unit_rate'],
+                        'final_unit_rate' => $it['final_unit_rate'],
+                        'oil_quantity_kg' => $it['oil_quantity_kg'],
+                        'bran_value' => $it['bran_value'],
+                        'bag_amount' => $it['bag_amount'],
+                        'remarks' => $it['remarks'] ?? null,
+                        'sort_order' => $it['sort_order'] ?? 0,
+                    ]);
+                }
+            }
 
             // 4. Save Quality Test Breakdown
             $qcParams = [
@@ -345,7 +374,7 @@ class SettlementController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Settlement created successfully',
-            'data' => $settlement->load(['branch.company', 'vendor', 'product', 'invoice', 'debitNotes', 'qualityTests', 'charges']),
+            'data' => $settlement->load(['branch.company', 'vendor', 'product', 'invoice', 'debitNotes', 'qualityTests', 'charges', 'items.product']),
         ], 201);
     }
 
@@ -354,7 +383,7 @@ class SettlementController extends Controller
         $this->authorizeSettlementAccess();
         $this->guardSettlementCompany($settlement);
 
-        $settlement->load(['branch.company', 'vendor', 'product', 'invoice', 'debitNotes.items', 'qualityTests', 'charges', 'creator']);
+        $settlement->load(['branch.company', 'vendor', 'product', 'invoice', 'debitNotes.items', 'qualityTests', 'charges', 'creator', 'items.product']);
 
         $origInv = (float)($settlement->original_invoice_value ?? 0);
         $branVal = (float)($settlement->bran_value ?? 0);
@@ -430,6 +459,7 @@ class SettlementController extends Controller
             $calc = $this->calcService->calculate($validated);
 
             $modelData = array_merge($validated, [
+                'settlement_type' => $validated['settlement_type'] ?? $settlement->settlement_type ?? 'single',
                 'final_weight_mt' => $calc['final_weight_mt'],
                 'final_weight_kg' => $calc['final_weight_kg'],
                 'oil_quantity_kg' => $calc['oil_quantity_kg'],
@@ -458,6 +488,35 @@ class SettlementController extends Controller
             ]);
 
             $settlement->update($modelData);
+
+            // Sync Settlement Items
+            \App\Models\SettlementItem::where('settlement_id', $settlement->id)->delete();
+            if (($modelData['settlement_type'] ?? 'single') === 'multiple' && !empty($calc['items'])) {
+                foreach ($calc['items'] as $it) {
+                    \App\Models\SettlementItem::create([
+                        'settlement_id' => $settlement->id,
+                        'product_id' => $it['product_id'] ?? null,
+                        'lot_number' => $it['lot_number'] ?? null,
+                        'net_weight_mt' => $it['net_weight_mt'],
+                        'jute_bag' => $it['jute_bag'],
+                        'pp_bag' => $it['pp_bag'],
+                        'final_weight_mt' => $it['final_weight_mt'],
+                        'final_weight_kg' => $it['final_weight_kg'],
+                        'oil_content' => $it['oil_content'],
+                        'ffa' => $it['ffa'],
+                        'ss' => $it['ss'],
+                        'fibre' => $it['fibre'],
+                        'moisture' => $it['moisture'],
+                        'contract_unit_rate' => $it['contract_unit_rate'],
+                        'final_unit_rate' => $it['final_unit_rate'],
+                        'oil_quantity_kg' => $it['oil_quantity_kg'],
+                        'bran_value' => $it['bran_value'],
+                        'bag_amount' => $it['bag_amount'],
+                        'remarks' => $it['remarks'] ?? null,
+                        'sort_order' => $it['sort_order'] ?? 0,
+                    ]);
+                }
+            }
 
             // Update QC test values
             SettlementQualityTest::where('settlement_id', $settlement->id)->delete();
@@ -595,7 +654,7 @@ class SettlementController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Settlement updated successfully',
-            'data' => $settlement->load(['branch.company', 'vendor', 'product', 'invoice', 'debitNotes', 'qualityTests', 'charges']),
+            'data' => $settlement->load(['branch.company', 'vendor', 'product', 'invoice', 'debitNotes', 'qualityTests', 'charges', 'items.product']),
         ]);
     }
 
@@ -671,24 +730,18 @@ class SettlementController extends Controller
         $vendorId = $settlement->vendor_id;
 
         DB::transaction(function () use ($settlement, $vendorId) {
-            // Delete linked debit notes and their ledger postings
+            // Remove linked debit notes from ledger and soft-delete them
             foreach ($settlement->debitNotes as $dn) {
-                VendorLedger::whereIn('document_type', ['debit_note', 'credit_note', 'debit_note_reversal'])
-                    ->where('document_id', $dn->id)
-                    ->delete();
-                $dn->items()->delete();
+                VendorLedger::removeNoteEntries($dn);
                 $dn->delete();
             }
 
-            // Delete settlement bill ledger entries
+            // Remove settlement bill ledger entries
             VendorLedger::whereIn('document_type', ['settlement', 'settlement_cancellation'])
                 ->where('document_id', $settlement->id)
                 ->delete();
 
-            // Delete quality tests and charges
-            $settlement->qualityTests()->delete();
-            $settlement->charges()->delete();
-
+            // Soft-delete the settlement (child rows: items, QC, charges remain safe for restore)
             $settlement->delete();
 
             // Recalculate vendor balance

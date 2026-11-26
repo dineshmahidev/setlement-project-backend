@@ -12,6 +12,7 @@ class Settlement extends Model
 
     protected $fillable = [
         'settlement_number',
+        'settlement_type',
         'financial_year',
         'branch_id',
         'vendor_id',
@@ -231,5 +232,10 @@ class Settlement extends Model
         return max(0, (float)$this->net_payable > 0 
             ? (float)$this->net_payable 
             : ((float)$this->total_amount > 0 ? (float)$this->total_amount : (float)$this->bran_value));
+    }
+
+    public function items()
+    {
+        return $this->hasMany(SettlementItem::class)->orderBy('sort_order')->orderBy('id');
     }
 }

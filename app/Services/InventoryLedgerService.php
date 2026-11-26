@@ -265,12 +265,16 @@ class InventoryLedgerService
                     $newAvail = (float) $lot->available_qty - $qty;
                     $newVal = max(0, round((float) $lot->stock_value - (float) $it->amount, 2));
                     $lot->update([
-                        'received_qty' => $lot->received_qty - $qty,
-                        'available_qty' => $newAvail,
+                        'received_qty' => max(0, (float) $lot->received_qty - $qty),
+                        'available_qty' => max(0, $newAvail),
                         'stock_value' => $newVal,
                         'unit_cost' => $newAvail > 0 ? round($newVal / $newAvail, 4) : 0,
                         'status' => $newAvail <= 0 ? 'CLOSED' : 'OPEN',
                     ]);
+
+                    if ($this->isExclusiveLotForEntry($lot, 'INWARD', $entry->id)) {
+                        $lot->delete();
+                    }
                 }
 
                 $this->postMovement([
@@ -310,9 +314,9 @@ class InventoryLedgerService
      *
      * $lines: [['item_id', 'lot_number', 'quantity', 'unit_id', 'oil_pct', 'grade_id', 'rate', 'amount', 'notes'], ...]
      */
-    public function updatePostedInward(InwardEntry $entry, array $lines, int $userId): InwardEntry
+    public function updatePostedInward(InwardEntry $entry, array $lines, int $userId, ?int $oldBranchId = null): InwardEntry
     {
-        return DB::transaction(function () use ($entry, $lines, $userId) {
+        return DB::transaction(function () use ($entry, $lines, $userId, $oldBranchId) {
             $entry = InwardEntry::whereKey($entry->id)->lockForUpdate()->first();
             if ($entry->status !== 'CONFIRMED') {
                 throw new \RuntimeException('Only confirmed inward entries can be updated in place.');
@@ -320,6 +324,7 @@ class InventoryLedgerService
 
             $companyId = (int) $entry->company_id;
             $branchId = (int) $entry->branch_id;
+            $prevBranchId = $oldBranchId ?: $branchId;
             $effectiveLot = fn ($item) => $item->lot_number ?: sprintf('LOT-%s-%d', $entry->entry_number, $item->id);
 
             // Queue old items + their live ledger rows per product
@@ -341,14 +346,14 @@ class InventoryLedgerService
 
                 if ($old) {
                     $oldLotNo = $effectiveLot($old);
-                    if ($oldLotNo === $newLotNo) {
-                        // Same lot: apply only the qty/amount delta. Reversing the full
+                    if ($prevBranchId === $branchId && $oldLotNo === $newLotNo) {
+                        // Same lot & same branch: apply only the qty/amount delta. Reversing the full
                         // old qty first would falsely trip the negative-stock guard when
                         // the lot has already been partially consumed by outward entries.
-                        $this->applyInwardToLot($entry, $itemId, $newLotNo, $newQty - (float) $old->quantity, $newAmount - (float) $old->amount);
+                        $this->applyInwardToLot($entry, $itemId, $newLotNo, $newQty - (float) $old->quantity, $newAmount - (float) $old->amount, $branchId);
                     } else {
-                        $this->applyInwardToLot($entry, $itemId, $oldLotNo, -(float) $old->quantity, -(float) $old->amount);
-                        $this->applyInwardToLot($entry, $itemId, $newLotNo, $newQty, $newAmount);
+                        $this->applyInwardToLot($entry, $itemId, $oldLotNo, -(float) $old->quantity, -(float) $old->amount, $prevBranchId);
+                        $this->applyInwardToLot($entry, $itemId, $newLotNo, $newQty, $newAmount, $branchId);
                     }
                     $old->update([
                         'quantity' => $newQty,
@@ -364,6 +369,7 @@ class InventoryLedgerService
                 if ($row) {
                     // Update the EXISTING ledger row in place (id + number preserved → order stable)
                     $row->update([
+                        'branch_id' => $branchId,
                         'quantity' => $newQty,
                         'signed_quantity' => $newQty,
                         'rate' => $nl['rate'] ?? null,
@@ -389,7 +395,7 @@ class InventoryLedgerService
                     ]);
                     $newLotNo = $newLotNo ?: sprintf('LOT-%s-%d', $entry->entry_number, $newItem->id);
                     if ($newItem->lot_number !== $newLotNo) $newItem->update(['lot_number' => $newLotNo]);
-                    $this->applyInwardToLot($entry, $itemId, $newLotNo, $newQty, $newAmount);
+                    $this->applyInwardToLot($entry, $itemId, $newLotNo, $newQty, $newAmount, $branchId);
                     $this->postMovement([
                         'transaction_number' => $this->uniqueTxNumber($entry->entry_number.'-'.str_pad((string) $newItem->id, 3, '0', STR_PAD_LEFT)),
                         'date' => $entry->date,
@@ -423,7 +429,7 @@ class InventoryLedgerService
             // Removed lines: reverse lot effect, void row, delete item
             foreach ($oldByItem as $queue) {
                 foreach ($queue as $old) {
-                    $this->applyInwardToLot($entry, $old->item_id, $effectiveLot($old), -(float) $old->quantity, -(float) $old->amount);
+                    $this->applyInwardToLot($entry, $old->item_id, $effectiveLot($old), -(float) $old->quantity, -(float) $old->amount, $prevBranchId);
                     $orphan = ! empty($rowsByItem[$old->item_id]) ? array_shift($rowsByItem[$old->item_id]) : null;
                     if ($orphan) $this->voidRow($orphan);
                     $old->delete();
@@ -440,15 +446,40 @@ class InventoryLedgerService
     }
 
     /**
+     * Determine if a lot is exclusively owned by a specific entry and has no
+     * other transaction history, remaining received quantity, or opening stock.
+     */
+    protected function isExclusiveLotForEntry(Lot $lot, string $refType, int $refId): bool
+    {
+        if ((float) $lot->opening_qty > 0 || (float) $lot->received_qty > 0 || (float) $lot->issued_qty > 0 || (float) $lot->available_qty > 0) {
+            return false;
+        }
+
+        if ($lot->source !== $refType || (int) $lot->source_id !== $refId) {
+            return false;
+        }
+
+        return ! InventoryTransaction::where('lot_number', $lot->lot_number)
+            ->where('branch_id', $lot->branch_id)
+            ->where('item_id', $lot->item_id)
+            ->where(function ($q) use ($refType, $refId) {
+                $q->where('reference_type', '!=', $refType)
+                  ->orWhere('reference_id', '!=', $refId);
+            })->exists();
+    }
+
+    /**
      * Credit/debit an inward lot by qty + amount (negative = reverse).
      * Guards against stock going negative when shrinking an entry.
      */
-    protected function applyInwardToLot(InwardEntry $entry, int $itemId, string $lotNo, float $qty, float $amount): void
+    protected function applyInwardToLot(InwardEntry $entry, int $itemId, string $lotNo, float $qty, float $amount, ?int $branchId = null): void
     {
         if ($qty == 0.0 && $amount == 0.0) return;
 
+        $targetBranchId = $branchId ?: (int) $entry->branch_id;
+
         $lot = Lot::where('company_id', $entry->company_id)
-            ->where('branch_id', $entry->branch_id)
+            ->where('branch_id', $targetBranchId)
             ->where('item_id', $itemId)
             ->where('lot_number', $lotNo)
             ->lockForUpdate()->first();
@@ -457,7 +488,7 @@ class InventoryLedgerService
             if ($qty <= 0) return; // reversing a lot that never existed: nothing to do
             Lot::create([
                 'company_id' => $entry->company_id,
-                'branch_id' => $entry->branch_id,
+                'branch_id' => $targetBranchId,
                 'item_id' => $itemId,
                 'lot_number' => $lotNo,
                 'opening_qty' => 0,
@@ -482,13 +513,21 @@ class InventoryLedgerService
             ));
         }
         $newVal = max(0, round((float) $lot->stock_value + $amount, 2));
+        $newReceived = max(0, (float) $lot->received_qty + $qty);
         $lot->update([
-            'received_qty' => $lot->received_qty + $qty,
-            'available_qty' => $newAvail,
+            'received_qty' => $newReceived,
+            'available_qty' => max(0, $newAvail),
             'stock_value' => $newVal,
             'unit_cost' => $newAvail > 0 ? round($newVal / $newAvail, 4) : 0,
             'status' => $newAvail <= 0 ? 'CLOSED' : 'OPEN',
         ]);
+
+        // If this lot was generated by this inward and has now been fully reversed/renamed
+        // with 0 available stock and 0 issued stock, soft-delete it so it doesn't leave an orphan lot!
+        // But if other inwards or opening stock contributed to this lot, keep it intact!
+        if ($qty < 0 && $this->isExclusiveLotForEntry($lot, 'INWARD', $entry->id)) {
+            $lot->delete();
+        }
     }
 
     /**
@@ -519,12 +558,16 @@ class InventoryLedgerService
                     $newAvail = (float) $lot->available_qty - $qty;
                     $newVal = max(0, round((float) $lot->stock_value - (float) $it->amount, 2));
                     $lot->update([
-                        'received_qty' => $lot->received_qty - $qty,
-                        'available_qty' => $newAvail,
+                        'received_qty' => max(0, (float) $lot->received_qty - $qty),
+                        'available_qty' => max(0, $newAvail),
                         'stock_value' => $newVal,
                         'unit_cost' => $newAvail > 0 ? round($newVal / $newAvail, 4) : 0,
                         'status' => $newAvail <= 0 ? 'CLOSED' : 'OPEN',
                     ]);
+
+                    if ($this->isExclusiveLotForEntry($lot, 'INWARD', $entry->id)) {
+                        $lot->delete();
+                    }
                 }
             }
 
@@ -560,6 +603,7 @@ class InventoryLedgerService
                         $newAvail = (float) $lot->available_qty + $qty;
                         $cost = (float) $lot->unit_cost;
                         $lot->update([
+                            'issued_qty' => max(0, (float) $lot->issued_qty - $qty),
                             'available_qty' => $newAvail,
                             'stock_value' => round($newAvail * $cost, 2),
                             'status' => $newAvail > 0 ? 'OPEN' : $lot->status,
@@ -577,6 +621,7 @@ class InventoryLedgerService
                         $newAvail = (float) $lot->available_qty + $remaining;
                         $cost = (float) $lot->unit_cost;
                         $lot->update([
+                            'issued_qty' => max(0, (float) $lot->issued_qty - $remaining),
                             'available_qty' => $newAvail,
                             'stock_value' => round($newAvail * $cost, 2),
                             'status' => $newAvail > 0 ? 'OPEN' : $lot->status,
@@ -713,19 +758,40 @@ class InventoryLedgerService
 
             foreach ($entry->items as $it) {
                 $qty = (float) $it->quantity;
-                // Return to FIFO across lots (credit back)
-                $remaining = $qty;
-                $lots = Lot::where('company_id', $entry->company_id)
-                    ->where('branch_id', $entry->branch_id)
-                    ->where('item_id', $it->item_id)
-                    ->orderBy('id')->lockForUpdate()->get();
-                foreach ($lots as $lot) {
-                    if ($remaining <= 0) break;
-                    $lot->update([
-                        'available_qty' => $lot->available_qty + $remaining,
-                        'status' => 'OPEN',
-                    ]);
-                    $remaining = 0;
+                $lotNumber = 'MIXED';
+
+                if ($it->lot_id) {
+                    $lot = Lot::whereKey($it->lot_id)->lockForUpdate()->first();
+                    if ($lot) {
+                        $newAvail = (float) $lot->available_qty + $qty;
+                        $cost = (float) $lot->unit_cost;
+                        $lot->update([
+                            'issued_qty' => max(0, (float) $lot->issued_qty - $qty),
+                            'available_qty' => $newAvail,
+                            'stock_value' => round($newAvail * $cost, 2),
+                            'status' => $newAvail > 0 ? 'OPEN' : $lot->status,
+                        ]);
+                        $lotNumber = $lot->lot_number;
+                    }
+                } else {
+                    // Return to FIFO across lots (credit back)
+                    $remaining = $qty;
+                    $lots = Lot::where('company_id', $entry->company_id)
+                        ->where('branch_id', $entry->branch_id)
+                        ->where('item_id', $it->item_id)
+                        ->orderBy('id')->lockForUpdate()->get();
+                    foreach ($lots as $lot) {
+                        if ($remaining <= 0) break;
+                        $newAvail = (float) $lot->available_qty + $remaining;
+                        $cost = (float) $lot->unit_cost;
+                        $lot->update([
+                            'issued_qty' => max(0, (float) $lot->issued_qty - $remaining),
+                            'available_qty' => $newAvail,
+                            'stock_value' => round($newAvail * $cost, 2),
+                            'status' => $newAvail > 0 ? 'OPEN' : $lot->status,
+                        ]);
+                        $remaining = 0;
+                    }
                 }
 
                 $this->postMovement([
@@ -739,7 +805,7 @@ class InventoryLedgerService
                     'quantity' => $qty,
                     'signed_quantity' => $qty,
                     'unit_id' => $it->unit_id,
-                    'lot_number' => $it->lot_id ? optional(Lot::find($it->lot_id))->lot_number : 'MIXED',
+                    'lot_number' => $lotNumber,
                     'amount' => $it->amount,
                     'reference_type' => 'OUTWARD_CANCEL',
                     'reference_id' => $entry->id,
@@ -764,13 +830,16 @@ class InventoryLedgerService
      *
      * $lines: [['item_id', 'lot_id', 'quantity', 'unit_id', 'oil_pct', 'grade_id', 'rate', 'amount'], ...]
      */
-    public function updatePostedOutward(OutwardEntry $entry, array $lines, int $userId): OutwardEntry
+    public function updatePostedOutward(OutwardEntry $entry, array $lines, int $userId, ?int $oldBranchId = null): OutwardEntry
     {
-        return DB::transaction(function () use ($entry, $lines, $userId) {
+        return DB::transaction(function () use ($entry, $lines, $userId, $oldBranchId) {
             $entry = OutwardEntry::whereKey($entry->id)->lockForUpdate()->first();
             if ($entry->status !== 'CONFIRMED') {
                 throw new \RuntimeException('Only confirmed dispatch entries can be updated in place.');
             }
+
+            $prevBranchId = $oldBranchId ?: (int) $entry->branch_id;
+            $branchId = (int) $entry->branch_id;
 
             $oldByItem = [];
             foreach ($entry->items as $it) $oldByItem[$it->item_id][] = $it;
@@ -790,7 +859,7 @@ class InventoryLedgerService
                 $explicitGrade = isset($nl['grade_id']) && $nl['grade_id'] !== null ? (int) $nl['grade_id'] : null;
 
                 if ($old) {
-                    $this->creditOutwardConsumption($entry, $itemId, $old->lot_id ? (int) $old->lot_id : null, (float) $old->quantity);
+                    $this->creditOutwardConsumption($entry, $itemId, $old->lot_id ? (int) $old->lot_id : null, (float) $old->quantity, $prevBranchId);
                 }
                 $res = $this->consumeOutwardStock($entry, $itemId, $newLotId, $newQty, $oilPct, $explicitGrade);
 
@@ -807,6 +876,7 @@ class InventoryLedgerService
                 }
                 if ($row) {
                     $row->update([
+                        'branch_id' => $branchId,
                         'quantity' => $newQty,
                         'signed_quantity' => -$newQty,
                         'rate' => $nl['rate'] ?? null,
@@ -834,7 +904,7 @@ class InventoryLedgerService
                         'transaction_number' => $this->uniqueTxNumber($entry->entry_number.'-'.str_pad((string) $newItem->id, 3, '0', STR_PAD_LEFT)),
                         'date' => $entry->date,
                         'company_id' => $entry->company_id,
-                        'branch_id' => $entry->branch_id,
+                        'branch_id' => $branchId,
                         'item_id' => $itemId,
                         'type' => 'STOCK_OUT',
                         'quantity' => $newQty,
@@ -864,7 +934,7 @@ class InventoryLedgerService
             // Removed lines: credit back, void row, delete item
             foreach ($oldByItem as $queue) {
                 foreach ($queue as $old) {
-                    $this->creditOutwardConsumption($entry, $old->item_id, $old->lot_id ? (int) $old->lot_id : null, (float) $old->quantity);
+                    $this->creditOutwardConsumption($entry, $old->item_id, $old->lot_id ? (int) $old->lot_id : null, (float) $old->quantity, $prevBranchId);
                     $orphan = ! empty($rowsByItem[$old->item_id]) ? array_shift($rowsByItem[$old->item_id]) : null;
                     if ($orphan) $this->voidRow($orphan);
                     $old->delete();
@@ -881,7 +951,7 @@ class InventoryLedgerService
     }
 
     /** Credit stock back for one outward line (direct lot or FIFO for mixed). */
-    protected function creditOutwardConsumption(OutwardEntry $entry, int $itemId, ?int $lotId, float $qty): void
+    protected function creditOutwardConsumption(OutwardEntry $entry, int $itemId, ?int $lotId, float $qty, ?int $branchId = null): void
     {
         if ($qty <= 0) return;
 
@@ -899,9 +969,10 @@ class InventoryLedgerService
             return;
         }
 
+        $targetBranchId = $branchId ?: (int) $entry->branch_id;
         $remaining = $qty;
         $lots = Lot::where('company_id', $entry->company_id)
-            ->where('branch_id', $entry->branch_id)
+            ->where('branch_id', $targetBranchId)
             ->where('item_id', $itemId)
             ->orderBy('id')->lockForUpdate()->get();
         foreach ($lots as $lot) {

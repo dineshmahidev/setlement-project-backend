@@ -172,6 +172,134 @@ class TrashController extends Controller
         } elseif ($type === 'stock_transfer') {
             $userId = (int) (auth()->id() ?? 1);
             app(\App\Services\InventoryLedgerService::class)->restoreTransfer($item, $userId);
+        } elseif ($type === 'settlement') {
+            DB::transaction(function () use ($item) {
+                $item->restore();
+
+                // Restore any linked debit notes and re-post ledger
+                $linkedNotes = DebitNote::onlyTrashed()->where('settlement_id', $item->id)->get();
+                foreach ($linkedNotes as $dn) {
+                    $dn->restore();
+                    $noteType = $dn->transaction_type ?: 'debit';
+                    $ledgerDescription = (($noteType === 'credit') ? 'Credit Note against Bill #' : 'Rebate / Debit Note against Bill #')
+                        . ($item->bill_number ?? $item->settlement_number);
+                    \App\Models\VendorLedger::syncForNote($dn, $ledgerDescription);
+                }
+
+                if ($item->vendor_id) {
+                    \App\Models\VendorLedger::recalculateBalances($item->vendor_id);
+                }
+            });
+        } elseif ($type === 'inward') {
+            DB::transaction(function () use ($item) {
+                $item->restore();
+                // Restore any linked lots that were created exclusively for this inward
+                \App\Models\Lot::onlyTrashed()->where('source', 'INWARD')->where('source_id', $item->id)->restore();
+                // Restore its inventory transactions
+                \App\Models\InventoryTransaction::onlyTrashed()
+                    ->where('reference_type', 'INWARD')
+                    ->where('reference_id', $item->id)
+                    ->where('transaction_number', 'NOT LIKE', '%-VOID-%')
+                    ->restore();
+                // Re-credit lot balances
+                foreach ($item->items as $it) {
+                    $lotNo = $it->lot_number ?: sprintf('LOT-%s-%d', $item->entry_number, $it->id);
+                    $lot = \App\Models\Lot::where('company_id', $item->company_id)
+                        ->where('branch_id', $item->branch_id)
+                        ->where('item_id', $it->item_id)
+                        ->where('lot_number', $lotNo)
+                        ->first();
+                    if ($lot) {
+                        $qty = (float) $it->quantity;
+                        $amount = (float) $it->amount;
+                        $newAvail = (float) $lot->available_qty + $qty;
+                        $newVal = max(0, round((float) $lot->stock_value + $amount, 2));
+                        $lot->update([
+                            'received_qty' => $lot->received_qty + $qty,
+                            'available_qty' => $newAvail,
+                            'stock_value' => $newVal,
+                            'unit_cost' => $newAvail > 0 ? round($newVal / $newAvail, 4) : 0,
+                            'status' => $newAvail <= 0 ? 'CLOSED' : 'OPEN',
+                        ]);
+                    }
+                }
+            });
+        } elseif ($type === 'outward') {
+            DB::transaction(function () use ($item) {
+                $item->restore();
+                // Restore its inventory transactions
+                \App\Models\InventoryTransaction::onlyTrashed()
+                    ->where('reference_type', 'OUTWARD')
+                    ->where('reference_id', $item->id)
+                    ->where('transaction_number', 'NOT LIKE', '%-VOID-%')
+                    ->restore();
+
+                // If outward was CONFIRMED, re-consume lot balances
+                if ($item->status === 'CONFIRMED') {
+                    $allowNegative = (bool) \App\Models\CompanySetting::getValue('allow_negative_stock', false);
+                    foreach ($item->items as $it) {
+                        $qty = (float) $it->quantity;
+                        if ($qty <= 0) continue;
+
+                        if ($it->lot_id) {
+                            $lot = \App\Models\Lot::whereKey($it->lot_id)->lockForUpdate()->first();
+                            if ($lot) {
+                                $avail = (float) $lot->available_qty;
+                                if (!$allowNegative && $qty > $avail) {
+                                    throw new \RuntimeException(sprintf('Cannot restore outward: insufficient stock in lot %s (requested %s, available %s).', $lot->lot_number, $qty, $avail));
+                                }
+                                $newAvail = max(0, $avail - $qty);
+                                $lot->update([
+                                    'issued_qty' => (float) $lot->issued_qty + $qty,
+                                    'available_qty' => $newAvail,
+                                    'stock_value' => round(max(0, $newAvail * (float) $lot->unit_cost), 2),
+                                    'status' => $newAvail <= 0 ? 'CLOSED' : 'OPEN',
+                                ]);
+                            }
+                        } else {
+                            // FIFO across available lots
+                            $remaining = $qty;
+                            $lots = \App\Models\Lot::where('company_id', $item->company_id)
+                                ->where('branch_id', $item->branch_id)
+                                ->where('item_id', $it->item_id)
+                                ->where('status', 'OPEN')
+                                ->where('available_qty', '>', 0)
+                                ->orderBy('id')
+                                ->lockForUpdate()->get();
+
+                            $totalAvail = (float) $lots->sum('available_qty');
+                            if (!$allowNegative && $qty > $totalAvail) {
+                                throw new \RuntimeException(sprintf('Cannot restore outward: insufficient stock (requested %s, available %s).', $qty, $totalAvail));
+                            }
+
+                            foreach ($lots as $lot) {
+                                if ($remaining <= 0) break;
+                                $take = min($remaining, (float) $lot->available_qty);
+                                $cost = (float) $lot->unit_cost;
+                                $newAvail = (float) $lot->available_qty - $take;
+                                $lot->update([
+                                    'issued_qty' => (float) $lot->issued_qty + $take,
+                                    'available_qty' => $newAvail,
+                                    'stock_value' => round($newAvail * $cost, 2),
+                                    'status' => $newAvail <= 0 ? 'CLOSED' : 'OPEN',
+                                ]);
+                                $remaining -= $take;
+                            }
+                        }
+                    }
+                }
+            });
+        } elseif ($type === 'debit_note') {
+            DB::transaction(function () use ($item) {
+                $item->restore();
+                $noteType = $item->transaction_type ?: 'debit';
+                $ledgerDescription = (($noteType === 'credit') ? 'Credit Note #' : 'Debit Note #') . $item->debit_note_number;
+                \App\Models\VendorLedger::syncForNote($item, $ledgerDescription);
+
+                if ($item->vendor_id) {
+                    \App\Models\VendorLedger::recalculateBalances($item->vendor_id);
+                }
+            });
         } else {
             $item->restore();
         }
@@ -202,15 +330,22 @@ class TrashController extends Controller
 
         DB::transaction(function () use ($type, $item) {
             // Delete dependent child rows if any
-            if ($type === 'inward' && method_exists($item, 'items')) {
+            if ($type === 'inward') {
+                if (method_exists($item, 'items')) $item->items()->forceDelete();
+                \App\Models\Lot::withTrashed()->where('source', 'INWARD')->where('source_id', $item->id)->where('issued_qty', 0)->forceDelete();
+                \App\Models\InventoryTransaction::withTrashed()->where('reference_type', 'INWARD')->where('reference_id', $item->id)->forceDelete();
+            } elseif ($type === 'outward') {
                 $item->items()->delete();
-            } elseif ($type === 'outward' && method_exists($item, 'items')) {
-                $item->items()->delete();
+                \App\Models\InventoryTransaction::withTrashed()->where('reference_type', 'OUTWARD')->where('reference_id', $item->id)->forceDelete();
             } elseif ($type === 'production') {
                 if (method_exists($item, 'inputs')) $item->inputs()->delete();
                 if (method_exists($item, 'outputs')) $item->outputs()->delete();
             } elseif ($type === 'debit_note' && method_exists($item, 'items')) {
                 $item->items()->delete();
+            } elseif ($type === 'settlement') {
+                if (method_exists($item, 'items')) $item->items()->delete();
+                if (method_exists($item, 'qualityTests')) $item->qualityTests()->delete();
+                if (method_exists($item, 'charges')) $item->charges()->delete();
             } elseif ($type === 'lot') {
                 \App\Models\InventoryTransaction::onlyTrashed()
                     ->where('lot_number', $item->lot_number)
@@ -252,15 +387,22 @@ class TrashController extends Controller
                 $modelClass = $this->models[$t];
                 $records = $this->scopeTrashQuery($modelClass::onlyTrashed(), $t, $companyId)->get();
                 foreach ($records as $item) {
-                    if ($t === 'inward' && method_exists($item, 'items')) {
+                    if ($t === 'inward') {
+                        if (method_exists($item, 'items')) $item->items()->forceDelete();
+                        \App\Models\Lot::withTrashed()->where('source', 'INWARD')->where('source_id', $item->id)->where('issued_qty', 0)->forceDelete();
+                        \App\Models\InventoryTransaction::withTrashed()->where('reference_type', 'INWARD')->where('reference_id', $item->id)->forceDelete();
+                    } elseif ($t === 'outward') {
                         $item->items()->delete();
-                    } elseif ($t === 'outward' && method_exists($item, 'items')) {
-                        $item->items()->delete();
+                        \App\Models\InventoryTransaction::withTrashed()->where('reference_type', 'OUTWARD')->where('reference_id', $item->id)->forceDelete();
                     } elseif ($t === 'production') {
                         if (method_exists($item, 'inputs')) $item->inputs()->delete();
                         if (method_exists($item, 'outputs')) $item->outputs()->delete();
                     } elseif ($t === 'debit_note' && method_exists($item, 'items')) {
                         $item->items()->delete();
+                    } elseif ($t === 'settlement') {
+                        if (method_exists($item, 'items')) $item->items()->delete();
+                        if (method_exists($item, 'qualityTests')) $item->qualityTests()->delete();
+                        if (method_exists($item, 'charges')) $item->charges()->delete();
                     } elseif ($t === 'lot') {
                         \App\Models\InventoryTransaction::onlyTrashed()
                             ->where('lot_number', $item->lot_number)

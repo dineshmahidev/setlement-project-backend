@@ -478,8 +478,13 @@
                                 @if(!empty($vendorPhone))
                                     <div><span class="lbl">Phone :</span> {{ $vendorPhone }}</div>
                                 @endif
-                                <div class="product-line"><span class="lbl">Product :</span> <b
-                                        class="text-navy">{{ $productName }}</b></div>
+                                @if($settlement->settlement_type !== 'multiple')
+                                    <div class="product-line"><span class="lbl">Product :</span> <b
+                                            class="text-navy">{{ $productName }}</b></div>
+                                @else
+                                    <div class="product-line"><span class="lbl">Type :</span> <b
+                                            style="color: #0b3558; background: #e0f2fe; padding: 1px 6px; border-radius: 2px;">MULTIPLE PRODUCTS ({{ $settlement->items->count() }})</b></div>
+                                @endif
                             </td>
                         </tr>
                     </table>
@@ -498,6 +503,7 @@
                             <td class="k">Vehicle Number</td>
                             <td class="v">{{ $vehicleNumber }}</td>
                         </tr>
+                        @if($settlement->settlement_type !== 'multiple')
                         <tr>
                             <td class="k">Cont. Unit Rate</td>
                             <td class="v">{{ $fmt($settlement->contract_unit_rate) }}</td>
@@ -506,8 +512,9 @@
                             <td class="k">Final Unit Rate</td>
                             <td class="v">{{ $fmt($settlement->final_unit_rate) }}</td>
                         </tr>
+                        @endif
                         <tr>
-                            <td class="k">Final Weight (MT)</td>
+                            <td class="k">Total Final Weight (MT)</td>
                             <td class="v">{{ $fmt($settlement->final_weight_mt, 3) }}</td>
                         </tr>
                         <tr>
@@ -522,6 +529,54 @@
                 </td>
             </tr>
         </table>
+
+        @if($settlement->settlement_type === 'multiple' && $settlement->items && $settlement->items->count())
+        <!-- MULTI-PRODUCT PARTICULARS TABLE -->
+        <div style="margin-top: 8px;">
+            <table class="data">
+                <tr class="head">
+                    <th style="width: 25px;" class="text-center">#</th>
+                    <th>Product</th>
+                    <th>Lot No</th>
+                    <th class="text-right">Weight (MT)</th>
+                    <th class="text-center">Oil %</th>
+                    <th class="text-center">QC</th>
+                    <th class="text-right">Unit Rate (&#8377;)</th>
+                    <th class="text-right">Bag Amt (&#8377;)</th>
+                    <th class="text-right">Bran Value (&#8377;)</th>
+                </tr>
+                @php $sumItemsWeight = 0; $sumItemsBran = 0; $sumItemsBag = 0; @endphp
+                @foreach($settlement->items as $idx => $it)
+                    @php
+                        $sumItemsWeight += (float)$it->final_weight_mt;
+                        $sumItemsBran += (float)$it->bran_value;
+                        $sumItemsBag += (float)$it->bag_amount;
+                    @endphp
+                    <tr class="{{ $idx % 2 === 1 ? 'alt' : '' }}">
+                        <td class="text-center">{{ $idx + 1 }}</td>
+                        <td><b>{{ $it->product?->product_name ?: 'Product #'.($it->product_id ?: ($idx+1)) }}</b></td>
+                        <td class="text-navy">{{ $it->lot_number ?: '-' }}</td>
+                        <td class="text-right font-mono">{{ $fmt($it->final_weight_mt, 3) }}</td>
+                        <td class="text-center text-bold" style="color: #b37d14;">{{ $fmt($it->oil_content) }}%</td>
+                        <td class="text-center" style="font-size: 6.8pt;">
+                            <span class="{{ $qcClass($it->ffa) }}">F:{{ $it->ffa ?: 'P' }}</span>
+                            <span class="{{ $qcClass($it->moisture) }}">| M:{{ $it->moisture ?: 'P' }}</span>
+                        </td>
+                        <td class="text-right font-mono">&#8377;{{ $fmt($it->final_unit_rate) }}</td>
+                        <td class="text-right font-mono">&#8377;{{ $fmt($it->bag_amount) }}</td>
+                        <td class="text-right font-mono text-bold text-navy">&#8377;{{ $fmt($it->bran_value) }}</td>
+                    </tr>
+                @endforeach
+                <tr class="subtotal">
+                    <td colspan="3" class="text-right text-bold">SUB TOTAL (PRODUCTS)</td>
+                    <td class="text-right font-mono text-bold">{{ $fmt($sumItemsWeight, 3) }} MT</td>
+                    <td colspan="3"></td>
+                    <td class="text-right font-mono text-bold">&#8377;{{ $fmt($sumItemsBag) }}</td>
+                    <td class="text-right font-mono text-bold text-navy">&#8377;{{ $fmt($sumItemsBran) }}</td>
+                </tr>
+            </table>
+        </div>
+        @endif
 
         <!-- KPI strip -->
         <table class="kpi-table">
@@ -552,6 +607,7 @@
         <table class="two-panel-table">
             <tr>
                 <td class="col" style="width: 34%;">
+                    @if($settlement->settlement_type !== 'multiple')
                     <table class="data">
                         <tr class="head">
                             <th colspan="2">QC Test Particulars</th>
@@ -580,6 +636,29 @@
                                 {{ $qc($settlement->moisture) }}</td>
                         </tr>
                     </table>
+                    @else
+                    <table class="data">
+                        <tr class="head">
+                            <th colspan="2">Multiple Products Summary</th>
+                        </tr>
+                        <tr>
+                            <td style="width: 58%; font-weight: bold;">Products Count</td>
+                            <td class="text-center text-bold text-navy">{{ $settlement->items->count() }} Items</td>
+                        </tr>
+                        <tr class="alt">
+                            <td>Total Final Wt</td>
+                            <td class="text-center font-mono">{{ $fmt($settlement->final_weight_mt, 3) }} MT</td>
+                        </tr>
+                        <tr>
+                            <td>Total Oil Qty</td>
+                            <td class="text-center font-mono">{{ $fmt($settlement->oil_quantity_kg, 3) }} KG</td>
+                        </tr>
+                        <tr class="alt">
+                            <td>Total Bran Value</td>
+                            <td class="text-center font-mono text-bold text-navy">&#8377;{{ $fmt($settlement->bran_value) }}</td>
+                        </tr>
+                    </table>
+                    @endif
 
                     @if(!empty($remarksText))
                         <div style="height: 6px;"></div>
