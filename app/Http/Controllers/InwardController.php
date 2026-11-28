@@ -176,6 +176,9 @@ class InwardController extends Controller
                         }
                         $this->ledger->updatePostedInward($inward, $lines, $userId, $oldBranchId);
                         $inward->update(['total_amount' => round((float) collect($lines)->sum('amount'), 2)]);
+                        // Same transaction: re-point every outward line that was
+                        // picked from this inward onto the new rates.
+                        $this->ledger->syncOutwardRatesFromInward($inward);
                     }
                     return;
                 }
@@ -207,6 +210,7 @@ class InwardController extends Controller
                 }
 
                 $this->ledger->confirmInward($inward, $userId);
+                $this->ledger->syncOutwardRatesFromInward($inward);
             });
 
             return response()->json([

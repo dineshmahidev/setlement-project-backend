@@ -159,20 +159,24 @@ class InventoryLedgerService
                     ->lockForUpdate()->first();
 
                 if ($lot) {
-                    // Weighted-average cost merge
-                    $prevQty = (float) $lot->available_qty;
-                    $prevVal = (float) $lot->stock_value;
+                    // Weighted-average cost merge. The cost basis is every unit
+                    // the lot ever held (available + issued), so merging into a
+                    // partly dispatched lot keeps its value exact.
+                    $prevQty = (float) $lot->available_qty + (float) $lot->issued_qty;
+                    $prevVal = $prevQty * (float) $lot->unit_cost;
+                    $newAvail = (float) $lot->available_qty + $qty;
                     $newQty = $prevQty + $qty;
                     $newVal = $prevVal + $amount;
+                    $newCost = $newQty > 0 ? round($newVal / $newQty, 4) : 0;
                     $lot->update([
                         'received_qty' => $lot->received_qty + $qty,
-                        'available_qty' => $newQty,
-                        'unit_cost' => $newQty > 0 ? round($newVal / $newQty, 4) : 0,
-                        'stock_value' => round($newVal, 2),
+                        'available_qty' => $newAvail,
+                        'unit_cost' => $newCost,
+                        'stock_value' => round(max(0, $newAvail) * $newCost, 2),
                         'oil_pct' => $it->oil_pct ?? $lot->oil_pct,
                         'grade_id' => $gradeId ?? $lot->grade_id,
                         'unit_id' => $it->unit_id ?: $lot->unit_id,
-                        'status' => $newQty > 0 ? 'OPEN' : $lot->status,
+                        'status' => $newAvail > 0 ? 'OPEN' : $lot->status,
                     ]);
                 } else {
                     $lot = Lot::create([
@@ -446,6 +450,147 @@ class InventoryLedgerService
     }
 
     /**
+     * Source-of-truth rate for a lot: the rate booked on the inward line that
+     * created it. Falls back to the lot's weighted-average unit cost for lots
+     * that never came from an inward (opening / production / transfer).
+     */
+    public function resolveLotRate(Lot $lot): float
+    {
+        $rate = \App\Models\InwardItem::query()
+            ->join('inward_entries as __ie', '__ie.id', '=', 'inward_items.entry_id')
+            ->where('inward_items.item_id', $lot->item_id)
+            ->where('inward_items.lot_number', $lot->lot_number)
+            ->where('__ie.company_id', $lot->company_id)
+            ->where('__ie.branch_id', $lot->branch_id)
+            ->where('__ie.status', '!=', 'CANCELLED')
+            ->when(
+                $lot->source === 'INWARD' && $lot->source_id,
+                fn ($qq) => $qq->where('__ie.id', (int) $lot->source_id)
+            )
+            ->orderByDesc('__ie.id')
+            ->value('inward_items.rate');
+
+        return $rate !== null ? (float) $rate : (float) $lot->unit_cost;
+    }
+
+    /**
+     * Re-point every outward line (DRAFT + CONFIRMED) sourced from this inward
+     * entry onto the inward's current rates.
+     *
+     * Called from inside the caller's DB transaction. Pure in-place UPDATE of
+     * outward_items + their EXISTING OUTWARD ledger rows — quantities and stock
+     * are untouched, so no duplicate ledger/stock rows can appear. Unchanged
+     * lines are skipped, so repeated runs are idempotent.
+     */
+    public function syncOutwardRatesFromInward(InwardEntry $entry): void
+    {
+        $entry = InwardEntry::with('items')->find($entry->id);
+        if (! $entry || $entry->status === 'CANCELLED' || $entry->items->isEmpty()) {
+            return;
+        }
+
+        // [item_id][lot_number] => rate currently booked on the inward line
+        $rates = [];
+        $lotNumbers = [];
+        foreach ($entry->items as $it) {
+            if ($it->rate === null) continue;
+            $lotNo = $it->lot_number ?: sprintf('LOT-%s-%d', $entry->entry_number, $it->id);
+            $rates[(int) $it->item_id][$lotNo] = (float) $it->rate;
+            $lotNumbers[] = $lotNo;
+        }
+        if (! $rates || ! $lotNumbers) return;
+
+        // Lots created/credited by this inward, in the same company + godown
+        $lots = Lot::where('company_id', $entry->company_id)
+            ->where('branch_id', $entry->branch_id)
+            ->whereIn('item_id', array_keys($rates))
+            ->whereIn('lot_number', array_values(array_unique($lotNumbers)))
+            ->lockForUpdate()
+            ->get();
+        if ($lots->isEmpty()) return;
+
+        $rateByLotId = [];
+        $lotNumberByLotId = [];
+        foreach ($lots as $lot) {
+            $rateByLotId[(int) $lot->id] = $rates[(int) $lot->item_id][$lot->lot_number] ?? null;
+            $lotNumberByLotId[(int) $lot->id] = $lot->lot_number;
+        }
+
+        $outwardIds = \App\Models\OutwardItem::whereIn('lot_id', array_keys($rateByLotId))
+            ->distinct()->pluck('entry_id');
+
+        foreach ($outwardIds as $outwardId) {
+            $this->syncOutwardEntryRates(
+                (int) $outwardId,
+                $rateByLotId,
+                $lotNumberByLotId,
+                array_keys($rateByLotId)
+            );
+        }
+    }
+
+    /**
+     * Sync one outward header + its lines to the given lot rates.
+     * Ledger rows are matched and updated in place; never inserted.
+     */
+    protected function syncOutwardEntryRates(
+        int $outwardId,
+        array $rateByLotId,
+        array $lotNumberByLotId,
+        array $scopeLotIds
+    ): void {
+        $entry = OutwardEntry::whereKey($outwardId)->lockForUpdate()->first();
+        if (! $entry || $entry->status === 'CANCELLED') return;
+
+        $rowsByItem = [];
+        foreach (InventoryTransaction::where('reference_type', 'OUTWARD')
+                     ->where('reference_id', $outwardId)
+                     ->orderBy('id')->get() as $r) {
+            $rowsByItem[(int) $r->item_id][] = $r;
+        }
+
+        $changed = false;
+        foreach ($entry->items as $it) {
+            $lotId = $it->lot_id ? (int) $it->lot_id : 0;
+            if (! $lotId || ! in_array($lotId, $scopeLotIds, true)) continue;
+
+            $rate = $rateByLotId[$lotId];
+            if ($rate === null) continue;
+            if ($it->rate !== null && abs((float) $it->rate - $rate) < 0.00005) continue;
+
+            $amount = round(
+                (float) $it->quantity * $rate
+                - (float) ($it->discount ?? 0)
+                + (float) ($it->additional_charges ?? 0),
+                2
+            );
+
+            $it->update(['rate' => $rate, 'amount' => $amount]);
+            $changed = true;
+
+            $queue = $rowsByItem[(int) $it->item_id] ?? [];
+            if ($queue) {
+                $idx = null;
+                foreach ($queue as $k => $cand) {
+                    if ($cand->lot_number === $lotNumberByLotId[$lotId]) { $idx = $k; break; }
+                }
+                if ($idx === null && count($queue) === 1) $idx = array_key_first($queue);
+                if ($idx !== null) {
+                    $row = $queue[$idx];
+                    unset($queue[$idx]);
+                    $rowsByItem[(int) $it->item_id] = array_values($queue);
+                    $row->update(['rate' => $rate, 'amount' => $amount]);
+                }
+            }
+        }
+
+        if ($changed) {
+            $total = (float) \App\Models\OutwardItem::where('entry_id', $outwardId)->sum('amount');
+            $entry->update(['total_amount' => round($total, 2)]);
+        }
+    }
+
+    /**
      * Determine if a lot is exclusively owned by a specific entry and has no
      * other transaction history, remaining received quantity, or opening stock.
      */
@@ -512,13 +657,24 @@ class InventoryLedgerService
                 $lot->lot_number, $lot->available_qty, $qty
             ));
         }
-        $newVal = max(0, round((float) $lot->stock_value + $amount, 2));
+
+        // Cost basis = every unit the lot ever held (available + issued). A
+        // rate-only edit therefore moves unit_cost by exactly
+        // delta_amount / basis_qty — even when the lot is already partly
+        // dispatched — and stock_value keeps its available_qty * unit_cost
+        // invariant instead of drifting.
+        $basisQty = (float) $lot->available_qty + (float) $lot->issued_qty;
+        $newBasisQty = $basisQty + $qty;
+        $newBasisValue = $basisQty * (float) $lot->unit_cost + $amount;
+        $unitCost = $newBasisQty > 0 ? round($newBasisValue / $newBasisQty, 4) : 0;
+
+        $newAvail = max(0, $newAvail);
         $newReceived = max(0, (float) $lot->received_qty + $qty);
         $lot->update([
             'received_qty' => $newReceived,
-            'available_qty' => max(0, $newAvail),
-            'stock_value' => $newVal,
-            'unit_cost' => $newAvail > 0 ? round($newVal / $newAvail, 4) : 0,
+            'available_qty' => $newAvail,
+            'stock_value' => round($newAvail * $unitCost, 2),
+            'unit_cost' => $unitCost,
             'status' => $newAvail <= 0 ? 'CLOSED' : 'OPEN',
         ]);
 

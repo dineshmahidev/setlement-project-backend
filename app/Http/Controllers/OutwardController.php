@@ -88,11 +88,14 @@ class OutwardController extends Controller
                         $i['unit_id'] = \App\Models\Item::whereKey($i['item_id'])->value('unit_id');
                     }
                 }
-                // If rate is missing, auto-pick from lot unit_cost
+                // If rate is missing, auto-pick the inward rate booked for this lot
                 if ((!isset($i['rate']) || $i['rate'] === '' || (float)$i['rate'] == 0) && !empty($i['lot_id'])) {
-                    $lotCost = \App\Models\Lot::whereKey($i['lot_id'])->value('unit_cost');
-                    if ($lotCost) {
-                        $i['rate'] = (float) $lotCost;
+                    $lot = \App\Models\Lot::find($i['lot_id']);
+                    if ($lot) {
+                        $lotRate = $this->ledger->resolveLotRate($lot);
+                        if ($lotRate > 0) {
+                            $i['rate'] = $lotRate;
+                        }
                     }
                 }
                 // If oil_pct is missing, auto-pick from lot (from inward)

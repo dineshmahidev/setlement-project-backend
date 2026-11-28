@@ -441,4 +441,153 @@ class InventoryLedgerTest extends TestCase
             ->where('reference_type', 'INWARD_CANCEL')->count());
         $this->assertEquals(15, $this->ledger->availableQty($this->company->id, $this->branch->id, $this->item->id));
     }
+
+    /** ---- Inward rate → outward rate propagation ---- */
+
+    private function makeConfirmedInward(float $qty, float $rate): InwardEntry
+    {
+        $in = $this->makeInward([['item_id' => $this->item->id, 'lot_number' => 'L1', 'quantity' => $qty, 'rate' => $rate]]);
+        return $this->ledger->confirmInward($in->fresh('items'), $this->userId)->fresh('items');
+    }
+
+    private function makeOutward(Lot $lot, float $qty, float $rate, bool $confirm = true): OutwardEntry
+    {
+        $out = OutwardEntry::create([
+            'entry_number' => $this->ledger->nextNumber('OUT', 'outward_entries', 'entry_number'),
+            'company_id' => $this->company->id, 'branch_id' => $this->branch->id,
+            'date' => now()->toDateString(), 'dispatch_type' => 'DIRECT',
+            'status' => 'DRAFT', 'created_by' => $this->userId, 'total_amount' => $qty * $rate,
+        ]);
+        $out->items()->create([
+            'item_id' => $this->item->id, 'lot_id' => $lot->id,
+            'quantity' => $qty, 'rate' => $rate, 'amount' => $qty * $rate,
+        ]);
+        return $confirm
+            ? $this->ledger->confirmOutward($out->fresh('items'), $this->userId)->fresh('items')
+            : $out;
+    }
+
+    private function editInwardRate(InwardEntry $in, float $rate, float $qty = 100): void
+    {
+        $request = \Illuminate\Http\Request::create('/api/inward/'.$in->id, 'PUT', [
+            'branch_id' => $this->branch->id,
+            'date' => now()->toDateString(),
+            'items' => [[
+                'item_id' => $this->item->id, 'lot_number' => 'L1',
+                'quantity' => $qty, 'rate' => $rate,
+            ]],
+        ]);
+        $request->setUserResolver(fn () => User::find(1));
+        $response = app(\App\Http\Controllers\InwardController::class)->update($request, $in->fresh());
+        $this->assertEquals(200, $response->getStatusCode());
+        $data = json_decode($response->getContent(), true);
+        $this->assertTrue($data['success'] ?? false, (string) ($data['message'] ?? 'inward update failed'));
+    }
+
+    public function test_inward_rate_change_propagates_to_confirmed_outward_in_place(): void
+    {
+        $in = $this->makeConfirmedInward(100, 100);
+        $lot = Lot::where('lot_number', 'L1')->first();
+        $out = $this->makeOutward($lot, 4, 100);
+        $origInwardTx = InventoryTransaction::where('reference_type', 'INWARD')->where('reference_id', $in->id)->first();
+        $origOutwardTx = InventoryTransaction::where('reference_type', 'OUTWARD')->where('reference_id', $out->id)->first();
+
+        // Inward rate 100 -> 150
+        $this->editInwardRate($in, 150);
+
+        // Outward line follows the inward rate, amount recalculated
+        $line = $out->fresh()->items->first();
+        $this->assertEquals(150, (float) $line->rate);
+        $this->assertEquals(600, (float) $line->amount);
+        $this->assertEquals(600, (float) $out->fresh()->total_amount);
+
+        // Existing OUTWARD ledger row updated in place — no duplicate / no reversal
+        $liveOutward = InventoryTransaction::where('reference_type', 'OUTWARD')->where('reference_id', $out->id)->get();
+        $this->assertCount(1, $liveOutward);
+        $this->assertEquals($origOutwardTx->id, $liveOutward->first()->id);
+        $this->assertEquals(150, (float) $liveOutward->first()->rate);
+        $this->assertEquals(600, (float) $liveOutward->first()->amount);
+
+        // Existing INWARD ledger row updated in place too
+        $liveInward = InventoryTransaction::where('reference_type', 'INWARD')->where('reference_id', $in->id)->get();
+        $this->assertCount(1, $liveInward);
+        $this->assertEquals($origInwardTx->id, $liveInward->first()->id);
+        $this->assertEquals(150, (float) $liveInward->first()->rate);
+        $this->assertEquals(15000, (float) $liveInward->first()->amount);
+
+        // Header total + lot cost moved with the new rate
+        $this->assertEquals(15000, (float) $in->fresh()->total_amount);
+        $this->assertEquals(150, (float) $lot->fresh()->unit_cost);
+        $this->assertEquals('CONFIRMED', $out->fresh()->status);
+    }
+
+    public function test_inward_rate_change_also_updates_draft_outward(): void
+    {
+        $in = $this->makeConfirmedInward(100, 100);
+        $lot = Lot::where('lot_number', 'L1')->first();
+        $out = $this->makeOutward($lot, 5, 100, confirm: false);
+
+        $this->editInwardRate($in, 120);
+
+        $line = $out->fresh()->items->first();
+        $this->assertEquals(120, (float) $line->rate);
+        $this->assertEquals(600, (float) $line->amount);
+        $this->assertEquals(600, (float) $out->fresh()->total_amount);
+        $this->assertEquals('DRAFT', $out->fresh()->status);
+        // A draft never posts a ledger row — and this must not create one
+        $this->assertEquals(0, InventoryTransaction::where('reference_type', 'OUTWARD')->where('reference_id', $out->id)->count());
+    }
+
+    public function test_inward_rate_change_keeps_lot_cost_exact_when_partially_dispatched(): void
+    {
+        // 100 units @ 100, then dispatch 60 -> lot holds 40 @ 100
+        $in = $this->makeConfirmedInward(100, 100);
+        $lot = Lot::where('lot_number', 'L1')->first();
+        $this->makeOutward($lot, 60, 100);
+        $lot->refresh();
+        $this->assertEquals(40, (float) $lot->available_qty);
+        $this->assertEquals(100, (float) $lot->unit_cost);
+
+        // Rate-only edit 100 -> 110 (qty unchanged)
+        $this->editInwardRate($in, 110, qty: 100);
+
+        $lot->refresh();
+        $this->assertEquals(40, (float) $lot->available_qty);
+        $this->assertEquals(110, (float) $lot->unit_cost);   // not 125
+        $this->assertEquals(4400, (float) $lot->stock_value); // available * unit_cost
+        $this->assertEquals(110, $this->ledger->resolveLotRate($lot));
+    }
+
+    public function test_inward_rate_sync_is_idempotent_and_never_duplicates_rows(): void
+    {
+        $in = $this->makeConfirmedInward(100, 100);
+        $lot = Lot::where('lot_number', 'L1')->first();
+        $this->makeOutward($lot, 10, 100);
+
+        $inwardRows = InventoryTransaction::where('reference_type', 'INWARD')->where('reference_id', $in->id)->count();
+        $outwardRows = InventoryTransaction::where('reference_type', 'OUTWARD')->count();
+
+        $this->editInwardRate($in, 200);
+        $this->editInwardRate($in, 200); // same value again
+        $this->ledger->syncOutwardRatesFromInward($in->fresh('items'));
+
+        $this->assertEquals($inwardRows, InventoryTransaction::where('reference_type', 'INWARD')->where('reference_id', $in->id)->count());
+        $this->assertEquals($outwardRows, InventoryTransaction::where('reference_type', 'OUTWARD')->count());
+        $this->assertEquals(0, InventoryTransaction::withTrashed()
+            ->whereIn('reference_type', ['INWARD_CANCEL', 'OUTWARD_CANCEL'])
+            ->whereIn('reference_id', [$in->id])->count());
+    }
+
+    public function test_resolve_lot_rate_prefers_inward_line_over_weighted_lot_cost(): void
+    {
+        $in = $this->makeInward([['item_id' => $this->item->id, 'lot_number' => 'LX', 'quantity' => 10, 'rate' => 250, 'additional_charges' => 500]]);
+        $in->update(['total_amount' => 3000]);
+        $in->items()->first()->update(['amount' => 3000]);
+        $this->ledger->confirmInward($in->fresh('items'), $this->userId);
+
+        $lot = Lot::where('lot_number', 'LX')->first();
+        // Lot cost blends the charges (3000/10 = 300); the booked rate is 250.
+        $this->assertEquals(300, (float) $lot->unit_cost);
+        $this->assertEquals(250, $this->ledger->resolveLotRate($lot));
+    }
 }

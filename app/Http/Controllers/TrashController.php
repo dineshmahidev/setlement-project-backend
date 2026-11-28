@@ -213,16 +213,25 @@ class TrashController extends Controller
                         $qty = (float) $it->quantity;
                         $amount = (float) $it->amount;
                         $newAvail = (float) $lot->available_qty + $qty;
-                        $newVal = max(0, round((float) $lot->stock_value + $amount, 2));
+                        // Same cost basis as InventoryLedgerService::applyInwardToLot
+                        $basisQty = (float) $lot->available_qty + (float) $lot->issued_qty;
+                        $newBasisQty = $basisQty + $qty;
+                        $unitCost = $newBasisQty > 0
+                            ? round(($basisQty * (float) $lot->unit_cost + $amount) / $newBasisQty, 4)
+                            : 0;
                         $lot->update([
                             'received_qty' => $lot->received_qty + $qty,
-                            'available_qty' => $newAvail,
-                            'stock_value' => $newVal,
-                            'unit_cost' => $newAvail > 0 ? round($newVal / $newAvail, 4) : 0,
+                            'available_qty' => max(0, $newAvail),
+                            'stock_value' => round(max(0, $newAvail) * $unitCost, 2),
+                            'unit_cost' => $unitCost,
                             'status' => $newAvail <= 0 ? 'CLOSED' : 'OPEN',
                         ]);
                     }
                 }
+
+                // Outward lines still pointing at this inward's lots must
+                // follow the restored rates (in place, no re-posting).
+                app(\App\Services\InventoryLedgerService::class)->syncOutwardRatesFromInward($item);
             });
         } elseif ($type === 'outward') {
             DB::transaction(function () use ($item) {

@@ -41,7 +41,44 @@ class LotController extends Controller
             });
         }
 
-        return response()->json($q->paginate($request->get('per_page', 20)));
+        return response()->json($this->attachInwardRates($q->paginate($request->get('per_page', 20))));
+    }
+
+    /**
+     * Stamp `inward_rate` (the rate booked on the inward line that seeded each
+     * lot) onto the lot payload in ONE query, so screens that auto-fill a
+     * dispatch rate read the source of truth instead of a stale lot cost.
+     */
+    protected function attachInwardRates($paginator)
+    {
+        $lots = $paginator->getCollection();
+        $map = $this->inwardRateMap($lots);
+        foreach ($lots as $lot) {
+            $lot->inward_rate = $map[$lot->item_id.'|'.$lot->lot_number] ?? null;
+        }
+        return $paginator;
+    }
+
+    protected function inwardRateMap($lots): array
+    {
+        if ($lots->isEmpty()) return [];
+
+        $companyId = $this->activeCompanyId();
+        $map = [];
+        \App\Models\InwardItem::query()
+            ->join('inward_entries as __ie', '__ie.id', '=', 'inward_items.entry_id')
+            ->whereIn('inward_items.item_id', $lots->pluck('item_id')->unique()->values()->all())
+            ->whereIn('inward_items.lot_number', $lots->pluck('lot_number')->unique()->values()->all())
+            ->where('__ie.status', '!=', 'CANCELLED')
+            ->when($companyId, fn ($qq) => $qq->where('__ie.company_id', $companyId))
+            ->orderByDesc('__ie.id')
+            ->get(['inward_items.item_id', 'inward_items.lot_number', 'inward_items.rate'])
+            ->each(function ($row) use (&$map) {
+                $key = $row->item_id.'|'.$row->lot_number;
+                if (! array_key_exists($key, $map)) $map[$key] = $row->rate;
+            });
+
+        return $map;
     }
 
     /** Stock summary (item/godown aggregated + lot detail). */
@@ -100,6 +137,7 @@ class LotController extends Controller
                 ?? $m->customer;
         }
 
+        $lot->inward_rate = $this->inwardRateMap(collect([$lot]))[$lot->item_id.'|'.$lot->lot_number] ?? null;
         $lotData = $lot->toArray();
         $lotData['lot'] = $lot;
         $lotData['movements'] = $movements;
